@@ -19,14 +19,15 @@ def estimate_ctf(
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast_fraction: float,
-    patch_sidelength: int = 512
+    patch_sidelength: int = 512,
+    plot: bool = False
 ):
     # coerce to float
     image = image.float()
 
     # pack image to (t, h, w)
-    image, ps = einops.pack(image, pattern="* h w")
-
+    image, ps = einops.pack([image], pattern="* h w")
+    
     # grab image dimensions
     t, h, w = image.shape
 
@@ -62,7 +63,8 @@ def estimate_ctf(
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast_fraction,
-        pixel_spacing_angstroms=new_spacing
+        pixel_spacing_angstroms=new_spacing,
+        plot=plot
     )
 
     # estimate 2D background and subtract prior to 2D defocus estimation
@@ -82,6 +84,8 @@ def estimate_ctf(
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         initial_defocus=initial_defocus_estimate,
         pixel_spacing_angstroms=new_spacing,
-        n_patches_per_batch=40
+        n_patches_per_batch=40,
+        plot=plot,
     )
-    return defocus_field
+
+    return defocus_field[0]

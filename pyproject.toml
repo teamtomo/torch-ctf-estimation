@@ -45,6 +45,7 @@ dependencies = [
     "torchvision>=0.22.1",
     "notebook>=7.4.3",
     "torch-fourier-rescale>=0.1.1",
+    "torch-fourier-filter>=0.2.4",
 ]
 
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
@@ -60,6 +61,11 @@ dev = [
     "pre-commit",
     "rich",  # https://github.com/Textualize/rich
     "ruff",
+    "pooch",
+    "matplotlib",
+    "tqdm",
+    "mrcfile",
+    "cmap",
 ]
 
 [project.urls]

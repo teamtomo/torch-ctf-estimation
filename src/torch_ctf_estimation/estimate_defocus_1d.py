@@ -16,6 +16,7 @@ def estimate_defocus_1d(
     spherical_aberration_mm: float,
     amplitude_contrast: float,
     pixel_spacing_angstroms: float,
+    plot: bool = False,
 ) -> torch.Tensor:
     """
 
@@ -117,11 +118,12 @@ def estimate_defocus_1d(
     max_correlation_idx = torch.argmax(zncc)
     best_defocus = test_defoci[max_correlation_idx]
 
-    from matplotlib import pyplot as plt
-    fig, ax = plt.subplots()
-    ax.plot(normalised_raps_in_fit_range.detach().numpy())
-    ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
-    plt.show()
+    if plot:
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots()
+        ax.plot(normalised_raps_in_fit_range.detach().numpy())
+        ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
+        plt.show()
 
     return best_defocus
 
