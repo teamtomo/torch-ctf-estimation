@@ -2,9 +2,9 @@ import einops
 import torch
 from torch_cubic_spline_grids import CubicBSplineGrid1d
 
-from torch_ctf_estimation.ctf import calculate_ctf_1d
-from torch_ctf_estimation.rotational_average import rotational_average_dft_2d
-from torch_ctf_estimation.utils.dft_utils import spatial_frequency_to_fftfreq
+from torch_fourier_filter.ctf import calculate_ctf_1d
+from torch_fourier_filter.dft_utils import rotational_average_dft_2d
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
 
 def estimate_defocus_1d(

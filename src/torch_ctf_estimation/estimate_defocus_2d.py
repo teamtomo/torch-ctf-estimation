@@ -3,9 +3,9 @@ import numpy as np
 import torch
 from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 
-from torch_ctf_estimation.ctf import calculate_ctf_2d
-from torch_ctf_estimation.filters import generate_bandpass_filter
-from torch_ctf_estimation.utils.dft_utils import spatial_frequency_to_fftfreq
+from torch_fourier_filter.ctf import calculate_ctf_2d
+from torch_fourier_filter.bandpass import bandpass_filter
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
 
 def estimate_defocus_2d(
@@ -34,7 +34,7 @@ def estimate_defocus_2d(
     low_ang, high_ang = frequency_fit_range_angstroms
     low_fftfreq = spatial_frequency_to_fftfreq(1 / low_ang, spacing=pixel_spacing_angstroms)
     high_fftfreq = spatial_frequency_to_fftfreq(1 / high_ang, spacing=pixel_spacing_angstroms)
-    filter = generate_bandpass_filter(
+    filter = bandpass_filter(
         low=low_fftfreq,
         high=high_fftfreq,
         falloff=0,

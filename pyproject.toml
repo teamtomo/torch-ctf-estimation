@@ -41,7 +41,7 @@ dependencies = [
     "einops",
     "torch-cubic-spline-grids>=0.0.10",
     "scipy>=1.13.1",
-    "torch-grid-utils>=0.0.5",
+    "torch-grid-utils>=0.0.6",
     "torchvision>=0.22.1",
     "notebook>=7.4.3",
     "torch-fourier-rescale>=0.1.1",
