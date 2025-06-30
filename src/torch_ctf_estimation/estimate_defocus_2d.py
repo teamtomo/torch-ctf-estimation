@@ -3,9 +3,9 @@ import numpy as np
 import torch
 from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 
-from torch_ctf_estimation.ctf import calculate_ctf_2d
-from torch_ctf_estimation.filters import generate_bandpass_filter
-from torch_ctf_estimation.utils.dft_utils import spatial_frequency_to_fftfreq
+from torch_fourier_filter.ctf import calculate_ctf_2d
+from torch_fourier_filter.bandpass import bandpass_filter
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
 
 def estimate_defocus_2d(
@@ -16,6 +16,7 @@ def estimate_defocus_2d(
     initial_defocus: float,
     n_patches_per_batch: int,
     pixel_spacing_angstroms: float,
+    plot: bool = False,
 ):
     # grab patch sidelength
     patch_sidelength = patch_power_spectra.shape[-2]
@@ -33,7 +34,7 @@ def estimate_defocus_2d(
     low_ang, high_ang = frequency_fit_range_angstroms
     low_fftfreq = spatial_frequency_to_fftfreq(1 / low_ang, spacing=pixel_spacing_angstroms)
     high_fftfreq = spatial_frequency_to_fftfreq(1 / high_ang, spacing=pixel_spacing_angstroms)
-    filter = generate_bandpass_filter(
+    filter = bandpass_filter(
         low=low_fftfreq,
         high=high_fftfreq,
         falloff=0,
@@ -89,20 +90,20 @@ def estimate_defocus_2d(
         mean_squared_error.backward()
         optimiser.step()
 
-        if i % 10 == 0:
-            print(defocus_model.data)
+
         defocus_models.append(defocus_model.data.detach().clone())
-    from matplotlib import pyplot as plt
-    fig, ax = plt.subplots()
-    defocus_grids = torch.stack(defocus_models, dim=0)
-    d00 = defocus_grids[..., 0, 0].view(-1)
-    d01 = defocus_grids[..., 0, 1].view(-1)
-    d10 = defocus_grids[..., 1, 0].view(-1)
-    d11 = defocus_grids[..., 1, 1].view(-1)
-    ax.plot(d00.detach().numpy())
-    ax.plot(d01.detach().numpy())
-    ax.plot(d10.detach().numpy())
-    ax.plot(d11.detach().numpy())
-    plt.show()
+    if plot:
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots()
+        defocus_grids = torch.stack(defocus_models, dim=0)
+        d00 = defocus_grids[..., 0, 0].view(-1)
+        d01 = defocus_grids[..., 0, 1].view(-1)
+        d10 = defocus_grids[..., 1, 0].view(-1)
+        d11 = defocus_grids[..., 1, 1].view(-1)
+        ax.plot(d00.detach().numpy())
+        ax.plot(d01.detach().numpy())
+        ax.plot(d10.detach().numpy())
+        ax.plot(d11.detach().numpy())
+        plt.show()
 
     return defocus_model.data

@@ -3,7 +3,7 @@ import torch
 
 import torchvision.transforms.functional as TF
 
-from torch_ctf_estimation.rotational_average import rotational_average_dft_2d
+from torch_fourier_filter.dft_utils import rotational_average_dft_2d
 
 
 def estimate_background_2d(
@@ -15,7 +15,7 @@ def estimate_background_2d(
         image_shape=(image_sidelength, image_sidelength),
         rfft=True,
         fftshifted=False,
-        return_2d_average=True,
+        return_1d_average=False,
     )
     raps_2d[0, 0] = 0
     raps_2d = einops.rearrange(raps_2d, 'h w -> 1 1 h w')

@@ -2,9 +2,9 @@ import einops
 import torch
 from torch_cubic_spline_grids import CubicBSplineGrid1d
 
-from torch_ctf_estimation.ctf import calculate_ctf_1d
-from torch_ctf_estimation.rotational_average import rotational_average_dft_2d
-from torch_ctf_estimation.utils.dft_utils import spatial_frequency_to_fftfreq
+from torch_fourier_filter.ctf import calculate_ctf_1d
+from torch_fourier_filter.dft_utils import rotational_average_dft_2d
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
 
 def estimate_defocus_1d(
@@ -16,6 +16,7 @@ def estimate_defocus_1d(
     spherical_aberration_mm: float,
     amplitude_contrast: float,
     pixel_spacing_angstroms: float,
+    plot: bool = False,
 ) -> torch.Tensor:
     """
 
@@ -117,11 +118,12 @@ def estimate_defocus_1d(
     max_correlation_idx = torch.argmax(zncc)
     best_defocus = test_defoci[max_correlation_idx]
 
-    from matplotlib import pyplot as plt
-    fig, ax = plt.subplots()
-    ax.plot(normalised_raps_in_fit_range.detach().numpy())
-    ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
-    plt.show()
+    if plot:
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots()
+        ax.plot(normalised_raps_in_fit_range.detach().numpy())
+        ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
+        plt.show()
 
     return best_defocus
 
