@@ -1,11 +1,29 @@
 import einops
 import torch
 from torch_cubic_spline_grids import CubicBSplineGrid1d
+from pydantic import BaseModel
+from typing import Optional
 
 from torch_fourier_filter.ctf import calculate_ctf_1d
 from torch_fourier_filter.dft_utils import rotational_average_dft_2d
 from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
+
+class Defocus1DResults(BaseModel):
+    frequencies_1d: torch.Tensor
+    powerspectrum_1d: Optional[torch.Tensor] = None
+    background_model: Optional[CubicBSplineGrid1d] = None
+    test_defoci: Optional[torch.Tensor] = None
+    cross_correlations: Optional[torch.Tensor] = None
+    best_defocus_microns: float
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "json_encoders": {
+            CubicBSplineGrid1d: lambda v: v.to_dict(),
+            torch.Tensor: lambda v: v.tolist(),
+        },
+    }
 
 def estimate_defocus_1d(
     power_spectrum: torch.Tensor,
@@ -16,8 +34,8 @@ def estimate_defocus_1d(
     spherical_aberration_mm: float,
     amplitude_contrast: float,
     pixel_spacing_angstroms: float,
-    plot: bool = False,
-) -> torch.Tensor:
+    debug: bool = False,
+) -> Defocus1DResults:
     """
 
     Parameters
@@ -118,14 +136,19 @@ def estimate_defocus_1d(
     max_correlation_idx = torch.argmax(zncc)
     best_defocus = test_defoci[max_correlation_idx]
 
-    if plot:
-        from matplotlib import pyplot as plt
-        fig, ax = plt.subplots()
-        ax.plot(normalised_raps_in_fit_range.detach().numpy())
-        ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
-        plt.show()
+    if debug:
+        return Defocus1DResults(
+            powerspectrum_1d=raps_in_fit_range,
+            background_model=background_model,
+            test_defoci=test_defoci,
+            cross_correlations=zncc,
+            best_defocus_microns=best_defocus
+        )
+    return Defocus1DResults(
+        best_defocus_microns=best_defocus
+    )
+        
 
-    return best_defocus
 
 
 

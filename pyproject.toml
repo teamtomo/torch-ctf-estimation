@@ -45,7 +45,8 @@ dependencies = [
     "torchvision>=0.22.1",
     "notebook>=7.4.3",
     "torch-fourier-rescale>=0.1.1",
-    "torch-fourier-filter>=0.2.4",
+    "torch-fourier-filter>=0.2.5",
+    "pydantic"
 ]
 
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies

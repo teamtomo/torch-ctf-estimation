@@ -7,6 +7,22 @@ from torch_fourier_filter.ctf import calculate_ctf_2d
 from torch_fourier_filter.bandpass import bandpass_filter
 from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
+from pydantic import BaseModel
+from typing import Optional
+
+class Defocus2DResults(BaseModel):
+    defocus_model: CubicCatmullRomGrid3d
+    patch_power_spectra: Optional[torch.Tensor] = None
+    model_trace: Optional[list[torch.Tensor]] = None
+    simulated_ctf2s: Optional[torch.Tensor] = None
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "json_encoders": {
+            CubicCatmullRomGrid3d: lambda v: v.to_dict(),
+            torch.Tensor: lambda v: v.tolist(),
+        },
+    }
 
 def estimate_defocus_2d(
     patch_power_spectra: torch.Tensor,
@@ -16,8 +32,8 @@ def estimate_defocus_2d(
     initial_defocus: float,
     n_patches_per_batch: int,
     pixel_spacing_angstroms: float,
-    plot: bool = False,
-):
+    debug: bool = False,
+) -> Defocus2DResults:
     # grab patch sidelength
     patch_sidelength = patch_power_spectra.shape[-2]
 
@@ -90,20 +106,16 @@ def estimate_defocus_2d(
         mean_squared_error.backward()
         optimiser.step()
 
-
         defocus_models.append(defocus_model.data.detach().clone())
-    if plot:
-        from matplotlib import pyplot as plt
-        fig, ax = plt.subplots()
-        defocus_grids = torch.stack(defocus_models, dim=0)
-        d00 = defocus_grids[..., 0, 0].view(-1)
-        d01 = defocus_grids[..., 0, 1].view(-1)
-        d10 = defocus_grids[..., 1, 0].view(-1)
-        d11 = defocus_grids[..., 1, 1].view(-1)
-        ax.plot(d00.detach().numpy())
-        ax.plot(d01.detach().numpy())
-        ax.plot(d10.detach().numpy())
-        ax.plot(d11.detach().numpy())
-        plt.show()
-
-    return defocus_model.data
+    
+    if debug:
+        return Defocus2DResults(
+            defocus_model=defocus_model,
+            simulated_ctf2s=simulated_ctf2s,
+            patch_power_spectra=patch_power_spectra,
+            model_trace=defocus_models
+        )
+    else:
+        return Defocus2DResults(
+            defocus_model=defocus_model
+        )

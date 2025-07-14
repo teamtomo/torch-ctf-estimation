@@ -20,7 +20,7 @@ def estimate_ctf(
     spherical_aberration_mm: float,
     amplitude_contrast_fraction: float,
     patch_sidelength: int = 512,
-    plot: bool = False
+    debug: bool = False
 ):
     # coerce to float
     image = image.float()
@@ -35,13 +35,12 @@ def estimate_ctf(
     image = normalize_image(image)
     # cuton, cutoff = frequency_fit_range_angstroms
     # target_spacing = 0.5 * cutoff
-    new_spacing = max(2.5, pixel_spacing_angstroms)
+    new_spacing = max(3.0, pixel_spacing_angstroms)
     image, _ = fourier_rescale_2d(
         image=image,
         source_spacing=pixel_spacing_angstroms,
         target_spacing=new_spacing
     )
-
     # extract grid of 2D patches with 50% overlap
     patches, patch_centers = extract_patch_grid(
         images=image,
@@ -55,7 +54,7 @@ def estimate_ctf(
     mean_ps = einops.reduce(patch_ps, '... ph pw -> ph pw', reduction='mean')
 
     # estimate defocus in 1D from mean of power spectra
-    initial_defocus_estimate = estimate_defocus_1d(
+    result1d = estimate_defocus_1d(
         power_spectrum=mean_ps,
         image_sidelength=patch_sidelength,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
@@ -64,9 +63,10 @@ def estimate_ctf(
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast_fraction,
         pixel_spacing_angstroms=new_spacing,
-        plot=plot
+        debug=debug
     )
 
+    
     # estimate 2D background and subtract prior to 2D defocus estimation
     background_2d = estimate_background_2d(
         power_spectrum=mean_ps,
@@ -77,15 +77,15 @@ def estimate_ctf(
     # estimate defocus in 2D with gradient based optimisation
     image_dimension_lengths = torch.tensor([t - 1, h - 1, w - 1]).float().to(patch_ps.device)
     normalised_patch_positions = patch_centers / image_dimension_lengths
-    defocus_field = estimate_defocus_2d(
+    result2d = estimate_defocus_2d(
         patch_power_spectra=patch_ps,
         normalised_patch_positions=normalised_patch_positions,
         defocus_grid_resolution=defocus_grid_resolution,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-        initial_defocus=initial_defocus_estimate,
+        initial_defocus=result1d.best_defocus_microns,
         pixel_spacing_angstroms=new_spacing,
         n_patches_per_batch=40,
-        plot=plot,
+        debug=debug,
     )
 
-    return defocus_field[0]
+    return mean_ps, result1d, result2d
