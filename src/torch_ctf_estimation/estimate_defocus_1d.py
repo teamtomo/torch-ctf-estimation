@@ -6,24 +6,9 @@ from typing import Optional
 
 from torch_fourier_filter.ctf import calculate_ctf_1d
 from torch_fourier_filter.dft_utils import rotational_average_dft_2d
-from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq, fftfreq_to_spatial_frequency
 
-
-class Defocus1DResults(BaseModel):
-    frequencies_1d: torch.Tensor
-    powerspectrum_1d: Optional[torch.Tensor] = None
-    background_model: Optional[CubicBSplineGrid1d] = None
-    test_defoci: Optional[torch.Tensor] = None
-    cross_correlations: Optional[torch.Tensor] = None
-    best_defocus_microns: float
-
-    model_config = {
-        "arbitrary_types_allowed": True,
-        "json_encoders": {
-            CubicBSplineGrid1d: lambda v: v.to_dict(),
-            torch.Tensor: lambda v: v.tolist(),
-        },
-    }
+from .models import Defocus1DResults, CTF
 
 def estimate_defocus_1d(
     power_spectrum: torch.Tensor,
@@ -33,8 +18,7 @@ def estimate_defocus_1d(
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast: float,
-    pixel_spacing_angstroms: float,
-    debug: bool = False,
+    pixel_spacing_angstroms: float
 ) -> Defocus1DResults:
     """
 
@@ -136,17 +120,23 @@ def estimate_defocus_1d(
     max_correlation_idx = torch.argmax(zncc)
     best_defocus = test_defoci[max_correlation_idx]
 
-    if debug:
-        return Defocus1DResults(
-            powerspectrum_1d=raps_in_fit_range,
-            background_model=background_model,
-            test_defoci=test_defoci,
-            cross_correlations=zncc,
-            best_defocus_microns=best_defocus
-        )
     return Defocus1DResults(
-        best_defocus_microns=best_defocus
+        frequencies_1d=fftfreq_to_spatial_frequency(freqs, pixel_spacing_angstroms),
+        powerspectrum_1d=rotationally_averaged_power_spectrum,
+        background_model=background_model,
+        test_defoci=test_defoci,
+        cross_correlations=zncc,
+        ctf_model=CTF(
+            defocus_um=best_defocus,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast_fraction=amplitude_contrast,
+            phase_shift_degrees=0
+        ),
+        low_frequency_fit=1/low_ang,
+        high_frequency_fit=1/high_ang
     )
+    
         
 
 

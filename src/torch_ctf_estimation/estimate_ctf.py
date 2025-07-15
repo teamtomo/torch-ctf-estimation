@@ -62,8 +62,7 @@ def estimate_ctf(
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast_fraction,
-        pixel_spacing_angstroms=new_spacing,
-        debug=debug
+        pixel_spacing_angstroms=new_spacing
     )
 
     
@@ -82,10 +81,9 @@ def estimate_ctf(
         normalised_patch_positions=normalised_patch_positions,
         defocus_grid_resolution=defocus_grid_resolution,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-        initial_defocus=result1d.best_defocus_microns,
+        initial_defocus=result1d.ctf_model.defocus_um,
         pixel_spacing_angstroms=new_spacing,
         n_patches_per_batch=40,
-        debug=debug,
     )
 
     return mean_ps, result1d, result2d
