@@ -92,7 +92,6 @@ def estimate_defocus_1d(
         voltage=voltage_kev,
         spherical_aberration=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast,
-        b_factor=0,
         phase_shift=0,
         pixel_size=pixel_spacing_angstroms,
         n_samples=h // 2 + 1,
@@ -128,10 +127,10 @@ def estimate_defocus_1d(
         cross_correlations=zncc,
         ctf_model=CTF(
             defocus_um=best_defocus,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast_fraction=amplitude_contrast,
-            phase_shift_degrees=0
+            voltage_kev=torch.as_tensor(voltage_kev, dtype=torch.float32),
+            spherical_aberration_mm=torch.as_tensor(spherical_aberration_mm, dtype=torch.float32),
+            amplitude_contrast_fraction=torch.as_tensor(amplitude_contrast, dtype=torch.float32),
+            phase_shift_degrees=torch.as_tensor(0.0,dtype=torch.float32)
         ),
         low_frequency_fit=1/low_ang,
         high_frequency_fit=1/high_ang

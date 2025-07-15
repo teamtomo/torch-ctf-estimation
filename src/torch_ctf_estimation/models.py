@@ -5,12 +5,18 @@ from torch_cubic_spline_grids import CubicBSplineGrid1d
 
 
 class CTF(BaseModel):
-    defocus_um: float
-    voltage_kev: float
-    spherical_aberration_mm: float
-    amplitude_contrast_fraction: float
-    phase_shift_degrees: float
-    
+    defocus_um: torch.Tensor
+    voltage_kev: torch.Tensor
+    spherical_aberration_mm: torch.Tensor
+    amplitude_contrast_fraction: torch.Tensor
+    phase_shift_degrees: torch.Tensor
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "json_encoders": {
+            torch.Tensor: lambda v: v.tolist(),
+        },
+    }
 
 class Defocus1DResults(BaseModel):
     frequencies_1d: torch.Tensor

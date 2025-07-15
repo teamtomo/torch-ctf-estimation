@@ -1,5 +1,6 @@
 import torch
 from ..estimate_defocus_1d import Defocus1DResults
+from torch_fourier_filter.ctf import calculate_total_phase_shift
 try:
     import matplotlib.pyplot as plt
 except ModuleNotFoundError:
@@ -84,7 +85,26 @@ def plot_1d_spectrum(
         background = torch.exp(results1d.background_model(x).squeeze()).detach().cpu().numpy()
         corrected_power = fit_power - background
         
-        ax3.plot(fit_freqs, corrected_power, 'purple', linewidth=2, label='Background-subtracted')
+        # Normalize to 0-1 range
+        corrected_power_min = corrected_power.min()
+        corrected_power_max = corrected_power.max()
+        corrected_power_normalized = (corrected_power - corrected_power_min) / (corrected_power_max - corrected_power_min)
+        
+        ax3.plot(fit_freqs, corrected_power_normalized, 'purple', linewidth=2, label='Background-subtracted')
+
+        # Plot simulated CTF^2
+        if results1d.ctf_model is not None:
+            simulated_ctf2 = torch.sin(calculate_total_phase_shift(
+                defocus_um=results1d.ctf_model.defocus_um,
+                fftfreq_grid_angstrom_squared=fit_freqs**2,
+                voltage_kv=results1d.ctf_model.voltage_kev,
+                spherical_aberration_mm=results1d.ctf_model.spherical_aberration_mm,
+                amplitude_contrast_fraction=results1d.ctf_model.amplitude_contrast_fraction,
+                phase_shift_degrees=results1d.ctf_model.phase_shift_degrees
+            )) ** 2
+
+            ax3.plot(fit_freqs, simulated_ctf2, 'orange', linestyle='--', 
+                     label='Simulated CTF^2')
         ax3.set_xlabel('Spatial Frequency (1/Å)')
         ax3.set_ylabel('Corrected Power')
         ax3.set_title('Background-subtracted Power Spectrum')

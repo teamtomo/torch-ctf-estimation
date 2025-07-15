@@ -88,7 +88,6 @@ def estimate_defocus_2d(
             voltage=300,
             spherical_aberration=2.7,
             amplitude_contrast=0.10,
-            b_factor=0,
             phase_shift=0,
             pixel_size=pixel_spacing_angstroms,
             image_shape=(patch_sidelength, patch_sidelength),
