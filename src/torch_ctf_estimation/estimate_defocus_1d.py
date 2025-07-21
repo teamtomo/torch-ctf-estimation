@@ -1,11 +1,14 @@
 import einops
 import torch
 from torch_cubic_spline_grids import CubicBSplineGrid1d
+from pydantic import BaseModel
+from typing import Optional
 
 from torch_fourier_filter.ctf import calculate_ctf_1d
 from torch_fourier_filter.dft_utils import rotational_average_dft_2d
-from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
+from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq, fftfreq_to_spatial_frequency
 
+from .models import Defocus1DResults, CTF
 
 def estimate_defocus_1d(
     power_spectrum: torch.Tensor,
@@ -15,9 +18,8 @@ def estimate_defocus_1d(
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast: float,
-    pixel_spacing_angstroms: float,
-    plot: bool = False,
-) -> torch.Tensor:
+    pixel_spacing_angstroms: float
+) -> Defocus1DResults:
     """
 
     Parameters
@@ -90,7 +92,6 @@ def estimate_defocus_1d(
         voltage=voltage_kev,
         spherical_aberration=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast,
-        b_factor=0,
         phase_shift=0,
         pixel_size=pixel_spacing_angstroms,
         n_samples=h // 2 + 1,
@@ -118,14 +119,25 @@ def estimate_defocus_1d(
     max_correlation_idx = torch.argmax(zncc)
     best_defocus = test_defoci[max_correlation_idx]
 
-    if plot:
-        from matplotlib import pyplot as plt
-        fig, ax = plt.subplots()
-        ax.plot(normalised_raps_in_fit_range.detach().numpy())
-        ax.plot(simulated_ctf2_in_fit_range[max_correlation_idx].detach().numpy())
-        plt.show()
+    return Defocus1DResults(
+        frequencies_1d=fftfreq_to_spatial_frequency(freqs, pixel_spacing_angstroms),
+        powerspectrum_1d=rotationally_averaged_power_spectrum,
+        background_model=background_model,
+        test_defoci=test_defoci,
+        cross_correlations=zncc,
+        ctf_model=CTF(
+            defocus_um=best_defocus,
+            voltage_kev=torch.as_tensor(voltage_kev, dtype=torch.float32),
+            spherical_aberration_mm=torch.as_tensor(spherical_aberration_mm, dtype=torch.float32),
+            amplitude_contrast_fraction=torch.as_tensor(amplitude_contrast, dtype=torch.float32),
+            phase_shift_degrees=torch.as_tensor(0.0,dtype=torch.float32)
+        ),
+        low_frequency_fit=1/low_ang,
+        high_frequency_fit=1/high_ang
+    )
+    
+        
 
-    return best_defocus
 
 
 
