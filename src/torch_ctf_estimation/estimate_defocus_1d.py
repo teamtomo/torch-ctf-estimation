@@ -4,8 +4,8 @@ from typing import Optional
 
 import einops
 import torch
+from torch_ctf import calculate_ctf_1d
 from torch_cubic_spline_grids import CubicBSplineGrid1d
-from torch_fourier_filter.ctf import calculate_ctf_1d
 from torch_fourier_filter.dft_utils import rotational_average_dft_2d
 from torch_grid_utils.fftfreq_grid import (
     fftfreq_to_spatial_frequency,
@@ -13,6 +13,8 @@ from torch_grid_utils.fftfreq_grid import (
 )
 
 from .models import CTF, Defocus1DResults
+
+__all__ = ["Defocus1DResults", "estimate_defocus_1d"]
 
 
 def estimate_defocus_1d(
@@ -93,7 +95,7 @@ def estimate_defocus_1d(
     x = torch.linspace(0, 1, steps=len(raps_in_fit_range))
     y = torch.log(raps_in_fit_range)
 
-    for i in range(200):
+    for _ in range(200):
         # calculate loss which will be minimised
         prediction = background_model(x).squeeze()
         difference = prediction - y

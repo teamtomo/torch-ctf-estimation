@@ -7,9 +7,9 @@ import einops
 import torch
 from pydantic import BaseModel, ConfigDict, field_serializer
 from pydantic.functional_serializers import SerializerFunctionWrapHandler
+from torch_ctf import calculate_ctf_2d
 from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 from torch_fourier_filter.bandpass import bandpass_filter
-from torch_fourier_filter.ctf import calculate_ctf_2d
 from torch_fourier_filter.envelopes import b_envelope
 from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
@@ -33,7 +33,7 @@ class Defocus2DResults(BaseModel):
     defocus_u: Optional[float] = None  # highest principal defocus (defocus + astig/2)
     defocus_v: Optional[float] = None  # lowest principal defocus (defocus - astig/2)
 
-    @field_serializer("*", mode="wrap")
+    @field_serializer("*", mode="wrap")  # type: ignore[misc]
     def _serialize_field(
         self, value: Any, handler: SerializerFunctionWrapHandler
     ) -> Any:
@@ -136,7 +136,7 @@ def estimate_defocus_2d(
     high_fftfreq = spatial_frequency_to_fftfreq(
         1 / high_ang, spacing=pixel_spacing_angstroms
     )
-    filter = bandpass_filter(
+    bp_filter = bandpass_filter(
         low=low_fftfreq,
         high=high_fftfreq,
         falloff=0,
@@ -145,9 +145,9 @@ def estimate_defocus_2d(
         fftshift=False,
         device=patch_power_spectra.device,
     )
-    patch_power_spectra *= filter
+    patch_power_spectra *= bp_filter
 
-    # optimise 2d+t defocus model, optionally astigmatism and astigmatism_angle (separate lrs)
+    # optimise 2d+t defocus model, optionally astigmatism and astigmatism_angle
     param_groups = [{"params": defocus_model.parameters(), "lr": 0.01}]
     if optimize_astigmatism:
         param_groups.extend(
@@ -163,7 +163,7 @@ def estimate_defocus_2d(
     astigmatism_trace: list[float] = []
     astigmatism_angle_trace: list[float] = []
     loss_trace: list[float] = []
-    for i in range(100):
+    for _ in range(100):
         # use all patches every iteration (full batch)
         subset_patch_ps = patch_power_spectra
         subset_patch_centers = normalised_patch_positions
@@ -237,7 +237,7 @@ def estimate_defocus_2d(
         )
         simulated_ctf2s = simulated_ctf2s * (env_2d**2)
 
-        simulated_ctf2s *= filter
+        simulated_ctf2s *= bp_filter
 
         # Check for NaN before backpropagation
         if torch.isnan(simulated_ctf2s).any() or torch.isinf(simulated_ctf2s).any():
@@ -251,7 +251,7 @@ def estimate_defocus_2d(
                     angle_v.fill_(_angle_v_init)
             continue
 
-        # zero gradients, calculate loss and backpropagate (reference: normalize then correlate)
+        # zero gradients, calculate loss and backpropagate
         optimiser.zero_grad()
         model = simulated_ctf2s
         data = subset_patch_ps
@@ -308,7 +308,7 @@ def estimate_defocus_2d(
 
         optimiser.step()
 
-        # Constrain astigmatism after optimization step and check for NaN (angle_u, angle_v are unconstrained)
+        # Constrain astigmatism after optimization step and check for NaN
         if optimize_astigmatism:
             with torch.no_grad():
                 # Check for NaN after step and reset if found
@@ -345,7 +345,7 @@ def estimate_defocus_2d(
     )
     final_envelope_B = float(envelope_B.detach().cpu().item())
 
-    # Principal defoci from mean defocus and astigmatism: defocus_u (highest), defocus_v (lowest)
+    # Principal defoci from mean defocus and astigmatism
     mean_defocus = float(defocus_model.data.detach().cpu().mean().item())
     final_defocus_u = mean_defocus + final_astigmatism / 2.0
     final_defocus_v = mean_defocus - final_astigmatism / 2.0

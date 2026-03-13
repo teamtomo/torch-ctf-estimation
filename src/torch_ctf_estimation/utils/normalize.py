@@ -1,10 +1,23 @@
-import einops
+"""Normalize an image."""
+
 import torch
 
 
-def normalize_image(image: torch.Tensor):
+def normalize_image(image: torch.Tensor) -> torch.Tensor:
+    """Normalize an image.
+
+    Parameters
+    ----------
+    image: torch.Tensor
+        Image to normalize.
+
+    Returns
+    -------
+    image: torch.Tensor
+        Normalized image.
+    """
     # grab shape
-    t, h, w = image.shape
+    _, h, w = image.shape
 
     # extract central 50 percent for mean/std calculation
     hl, hu = int(0.25 * h), int(0.75 * h)

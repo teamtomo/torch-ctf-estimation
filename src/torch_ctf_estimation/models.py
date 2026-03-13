@@ -20,7 +20,7 @@ class CTF(BaseModel):
     phase_shift_degrees: torch.Tensor
     envelope_B: Optional[torch.Tensor] = None
 
-    @field_serializer("*", mode="wrap")
+    @field_serializer("*", mode="wrap")  # type: ignore[misc]
     def _serialize_field(
         self, value: Any, handler: SerializerFunctionWrapHandler
     ) -> Any:
@@ -46,7 +46,7 @@ class Defocus1DResults(BaseModel):
     test_B_values: Optional[torch.Tensor] = None
     cross_correlations_2d: Optional[torch.Tensor] = None
 
-    @field_serializer("*", mode="wrap")
+    @field_serializer("*", mode="wrap")  # type: ignore[misc]
     def _serialize_field(
         self, value: Any, handler: SerializerFunctionWrapHandler
     ) -> Any:

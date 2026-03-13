@@ -5,10 +5,10 @@ from typing import Optional
 import einops
 import torch
 from torch_fourier_rescale import fourier_rescale_2d
+from torch_grid_utils.patch_grid import patch_grid
 
 from torch_ctf_estimation.estimate_defocus_1d import estimate_defocus_1d
 from torch_ctf_estimation.estimate_defocus_2d import estimate_defocus_2d
-from torch_ctf_estimation.patch_grid import extract_patch_grid
 from torch_ctf_estimation.utils.estimate_background_2d import estimate_background_2d
 from torch_ctf_estimation.utils.normalize import normalize_image
 
@@ -93,7 +93,7 @@ def estimate_ctf(
         image=image, source_spacing=pixel_spacing_angstroms, target_spacing=new_spacing
     )
     # extract grid of 2D patches with 50% overlap
-    patches, patch_centers = extract_patch_grid(
+    patches, patch_centers = patch_grid(
         images=image,
         patch_shape=(1, patch_sidelength, patch_sidelength),
         patch_step=(1, patch_sidelength // 2, patch_sidelength // 2),
@@ -144,7 +144,7 @@ def estimate_ctf(
     if initial_envelope_B_2d is None:
         initial_envelope_B_2d = 0.0
 
-    estimate_defocus_2d_kwargs = dict(
+    result2d = estimate_defocus_2d(
         patch_power_spectra=patch_ps,
         normalised_patch_positions=normalised_patch_positions,
         defocus_grid_resolution=defocus_grid_resolution,
@@ -156,7 +156,5 @@ def estimate_ctf(
         optimize_astigmatism=optimize_astigmatism,
         initial_envelope_B=initial_envelope_B_2d,
     )
-
-    result2d = estimate_defocus_2d(**estimate_defocus_2d_kwargs)
 
     return mean_ps, result1d, result2d

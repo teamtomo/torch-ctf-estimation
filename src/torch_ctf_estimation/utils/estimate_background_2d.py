@@ -7,8 +7,7 @@ from torch_fourier_filter.dft_utils import rotational_average_dft_2d
 
 
 def estimate_background_2d(
-    power_spectrum: torch.Tensor,
-    image_sidelength: int
+    power_spectrum: torch.Tensor, image_sidelength: int
 ) -> torch.Tensor:
     """Estimate background in 2D from a power spectrum.
 
