@@ -55,41 +55,59 @@ def estimate_defocus_2d(
     initial_astigmatism_angle: float = 0.0,
     optimize_astigmatism: bool = False,
     initial_envelope_B: float = 0.0,
+    n_iterations: int = 100,
+    defocus_lr: float = 0.01,
+    astigmatism_lr: float = 0.05,
+    astigmatism_angle_lr: float = 50.0,
     debug: bool = False,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D from a power spectrum.
 
+    Optimizes a 2D+t defocus grid (and optionally astigmatism and angle) by
+    maximising the correlation between simulated CTF² and patch power spectra,
+    looping over the time/frame dimension with gradient accumulation.
+
     Parameters
     ----------
-    patch_power_spectra: torch.Tensor
-        Patch power spectra.
-    normalised_patch_positions: torch.Tensor
-        Normalised patch positions.
-    defocus_grid_resolution: tuple[int, int, int]
-        Resolution of the defocus grid.
-    frequency_fit_range_angstroms: tuple[float, float]
-        `(low, high)` frequency fit range in angstroms.
-    initial_defocus: float
+    patch_power_spectra : torch.Tensor
+        Patch power spectra, shape ``(t, gh, gw, ph, pw)`` (frames, patch grid, freq).
+    normalised_patch_positions : torch.Tensor
+        Normalised patch positions, shape ``(t, gh, gw, 3)`` in [0, 1].
+    defocus_grid_resolution : tuple[int, int, int]
+        Resolution of the defocus grid ``(nt, nh, nw)``.
+    frequency_fit_range_angstroms : tuple[float, float]
+        ``(low, high)`` frequency fit range in angstroms.
+    initial_defocus : float
         Initial defocus in microns.
-    pixel_spacing_angstroms: float
+    pixel_spacing_angstroms : float
         Isotropic pixel spacing in angstroms.
-    initial_astigmatism: float
-        Initial astigmatism in microns.
-    initial_astigmatism_angle: float
-        Initial astigmatism angle in degrees.
-    optimize_astigmatism: bool
-        Whether to optimize the astigmatism.
-    initial_envelope_B: float
-        Initial B-factor for envelope.
-    debug: bool
-        Whether to return debug information.
+    initial_astigmatism : float, optional
+        Initial astigmatism in microns. Default 0.0.
+    initial_astigmatism_angle : float, optional
+        Initial astigmatism angle in degrees. Default 0.0.
+    optimize_astigmatism : bool, optional
+        Whether to optimize astigmatism and angle. Default False.
+    initial_envelope_B : float, optional
+        Initial B-factor for envelope. Default 0.0.
+    n_iterations : int, optional
+        Number of optimizer steps. Default 100.
+    defocus_lr : float, optional
+        Learning rate for the defocus grid parameters. Default 0.01.
+    astigmatism_lr : float, optional
+        Learning rate for the astigmatism magnitude (when ``optimize_astigmatism``).
+        Default 0.05.
+    astigmatism_angle_lr : float, optional
+        Learning rate for the astigmatism angle parameters (when
+        ``optimize_astigmatism``). Default 50.0.
+    debug : bool, optional
+        If True, return extra fields (traces, simulated CTF², patch spectra).
+        Default False.
 
     Returns
     -------
     Defocus2DResults
-        Results from 2D defocus estimation containing defocus model,
-        astigmatism, astigmatism angle, envelope B, and loss trace.
+        Defocus model, astigmatism, astigmatism angle, envelope B, and optional traces.
     """
     # grab patch sidelength
     patch_sidelength = patch_power_spectra.shape[-2]
@@ -145,12 +163,12 @@ def estimate_defocus_2d(
     patch_power_spectra *= bp_filter
 
     # optimise 2d+t defocus model, optionally astigmatism and astigmatism_angle
-    param_groups = [{"params": defocus_model.parameters(), "lr": 0.01}]
+    param_groups = [{"params": defocus_model.parameters(), "lr": defocus_lr}]
     if optimize_astigmatism:
         param_groups.extend(
             [
-                {"params": [astigmatism], "lr": 0.05},
-                {"params": [angle_u, angle_v], "lr": 50.0},
+                {"params": [astigmatism], "lr": astigmatism_lr},
+                {"params": [angle_u, angle_v], "lr": astigmatism_angle_lr},
             ]
         )
 
@@ -171,7 +189,7 @@ def estimate_defocus_2d(
     T = patch_power_spectra.shape[0]
     simulated_ctf2s = None  # for debug: last t's value from final iteration
 
-    for _ in range(100):
+    for _ in range(n_iterations):
         # Check astigmatism parameters for NaN before using them
         if optimize_astigmatism:
             if (
