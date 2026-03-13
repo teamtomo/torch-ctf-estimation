@@ -79,7 +79,7 @@ def estimate_ctf(
     image = image.float()
 
     # pack image to (t, h, w)
-    image, ps = einops.pack([image], pattern="* h w")
+    image, _ = einops.pack([image], pattern="* h w")
 
     # grab image dimensions
     t, h, w = image.shape
@@ -151,7 +151,6 @@ def estimate_ctf(
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         initial_defocus=result1d.ctf_model.defocus_um,
         pixel_spacing_angstroms=new_spacing,
-        n_patches_per_batch=100,
         debug=debug,
         optimize_astigmatism=optimize_astigmatism,
         initial_envelope_B=initial_envelope_B_2d,

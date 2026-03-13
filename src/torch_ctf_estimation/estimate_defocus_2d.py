@@ -50,7 +50,6 @@ def estimate_defocus_2d(
     defocus_grid_resolution: tuple[int, int, int],
     frequency_fit_range_angstroms: tuple[float, float],
     initial_defocus: float,
-    n_patches_per_batch: int,
     pixel_spacing_angstroms: float,
     initial_astigmatism: float = 0.0,
     initial_astigmatism_angle: float = 0.0,
@@ -73,8 +72,6 @@ def estimate_defocus_2d(
         `(low, high)` frequency fit range in angstroms.
     initial_defocus: float
         Initial defocus in microns.
-    n_patches_per_batch: int
-        Number of patches per batch.
     pixel_spacing_angstroms: float
         Isotropic pixel spacing in angstroms.
     initial_astigmatism: float
@@ -163,17 +160,18 @@ def estimate_defocus_2d(
     astigmatism_trace: list[float] = []
     astigmatism_angle_trace: list[float] = []
     loss_trace: list[float] = []
+    env_2d = b_envelope(
+        B=envelope_B,
+        image_shape=(patch_sidelength, patch_sidelength),
+        pixel_size=pixel_spacing_angstroms,
+        rfft=True,
+        fftshift=False,
+        device=patch_power_spectra.device,
+    )
+    T = patch_power_spectra.shape[0]
+    simulated_ctf2s = None  # for debug: last t's value from final iteration
+
     for _ in range(100):
-        # use all patches every iteration (full batch)
-        subset_patch_ps = patch_power_spectra
-        subset_patch_centers = normalised_patch_positions
-
-        # get predicted defocus at patch centers
-        predicted_patch_defoci = defocus_model(subset_patch_centers)
-        predicted_patch_defoci = einops.rearrange(
-            predicted_patch_defoci, "... 1 -> ..."
-        )
-
         # Check astigmatism parameters for NaN before using them
         if optimize_astigmatism:
             if (
@@ -208,63 +206,53 @@ def estimate_defocus_2d(
             _angle_deg = _angle_rad * (180.0 / math.pi)
             astig_angle_clamped = torch.remainder(_angle_deg + 180.0, 180.0)
 
-        # simulate CTF^2 at predicted defocus for each (t, y, x) position
-        simulated_ctf2s = (
-            calculate_ctf_2d(
-                defocus=predicted_patch_defoci,
-                voltage=300,
-                spherical_aberration=2.7,
-                amplitude_contrast=0.10,
-                phase_shift=0,
-                pixel_size=pixel_spacing_angstroms,
-                image_shape=(patch_sidelength, patch_sidelength),
-                astigmatism=astig_clamped,
-                astigmatism_angle=astig_angle_clamped,
-                rfft=True,
-                fftshift=False,
-            )
-            ** 2
-        )  # (t, ph, pw, h, w)
-
-        # apply B-factor envelope from 1D estimation
-        env_2d = b_envelope(
-            B=envelope_B,
-            image_shape=(patch_sidelength, patch_sidelength),
-            pixel_size=pixel_spacing_angstroms,
-            rfft=True,
-            fftshift=False,
-            device=patch_power_spectra.device,
-        )
-        simulated_ctf2s = simulated_ctf2s * (env_2d**2)
-
-        simulated_ctf2s *= bp_filter
-
-        # Check for NaN before backpropagation
-        if torch.isnan(simulated_ctf2s).any() or torch.isinf(simulated_ctf2s).any():
-            if optimize_astigmatism:
-                # Reset astigmatism to initial values if NaN detected
-                with torch.no_grad():
-                    astigmatism.fill_(
-                        initial_astigmatism if initial_astigmatism > 0 else 100.0
-                    )
-                    angle_u.fill_(_angle_u_init)
-                    angle_v.fill_(_angle_v_init)
-            continue
-
-        # zero gradients, calculate loss and backpropagate
         optimiser.zero_grad()
-        model = simulated_ctf2s
-        data = subset_patch_ps
-        model_flat = model.reshape(-1)
-        data_flat = data.reshape(-1)
-        eps = 1e-8
-        model_norm = (model_flat - model_flat.mean()) / (model_flat.std() + eps)
-        data_norm = (data_flat - data_flat.mean()) / (data_flat.std() + eps)
-        C = (model_norm * data_norm).sum()
-        loss = -C
+        loss_t_list: list[torch.Tensor] = []
 
-        # Check loss for NaN before backprop
-        if torch.isnan(loss) or torch.isinf(loss):
+        for t_idx in range(T):
+            patch_ps_t = patch_power_spectra[t_idx]
+            positions_t = normalised_patch_positions[t_idx]
+
+            predicted_defocus_t = defocus_model(positions_t)
+            predicted_defocus_t = einops.rearrange(predicted_defocus_t, "... 1 -> ...")
+
+            simulated_ctf2s_t = (
+                calculate_ctf_2d(
+                    defocus=predicted_defocus_t,
+                    voltage=300,
+                    spherical_aberration=2.7,
+                    amplitude_contrast=0.10,
+                    phase_shift=0,
+                    pixel_size=pixel_spacing_angstroms,
+                    image_shape=(patch_sidelength, patch_sidelength),
+                    astigmatism=astig_clamped,
+                    astigmatism_angle=astig_angle_clamped,
+                    rfft=True,
+                    fftshift=False,
+                )
+                ** 2
+            )
+            simulated_ctf2s_t = simulated_ctf2s_t * (env_2d**2)
+            simulated_ctf2s_t = simulated_ctf2s_t * bp_filter
+            simulated_ctf2s = simulated_ctf2s_t  # debug: keep last t
+
+            if (
+                torch.isnan(simulated_ctf2s_t).any()
+                or torch.isinf(simulated_ctf2s_t).any()
+            ):
+                continue  # skip this t's backward
+
+            model_flat = simulated_ctf2s_t.reshape(-1)
+            data_flat = patch_ps_t.reshape(-1)
+            eps = 1e-8
+            model_norm = (model_flat - model_flat.mean()) / (model_flat.std() + eps)
+            data_norm = (data_flat - data_flat.mean()) / (data_flat.std() + eps)
+            C_t = (model_norm * data_norm).sum()
+            loss_t = -C_t
+            (loss_t / T).backward()
+            loss_t_list.append(loss_t.detach())
+
+        if len(loss_t_list) == 0:
             if optimize_astigmatism:
                 with torch.no_grad():
                     astigmatism.fill_(
@@ -274,11 +262,20 @@ def estimate_defocus_2d(
                     angle_v.fill_(_angle_v_init)
             continue
 
-        loss_trace.append(float(loss.detach().cpu().item()))
-        loss.backward()
+        mean_loss = sum(loss_t_list) / len(loss_t_list)
+        if torch.isnan(mean_loss) or torch.isinf(mean_loss):
+            if optimize_astigmatism:
+                with torch.no_grad():
+                    astigmatism.fill_(
+                        initial_astigmatism if initial_astigmatism > 0 else 0.05
+                    )
+                    angle_u.fill_(_angle_u_init)
+                    angle_v.fill_(_angle_v_init)
+            continue
+
+        loss_trace.append(float(mean_loss.cpu().item()))
 
         if optimize_astigmatism:
-            # Check gradients for NaN/Inf and reset if needed
             if astigmatism.grad is not None and (
                 torch.isnan(astigmatism.grad) or torch.isinf(astigmatism.grad)
             ):
