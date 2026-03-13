@@ -1,5 +1,4 @@
 import torch
-import pytest
 
 from torch_ctf_estimation.estimate_ctf import estimate_ctf
 
@@ -8,7 +7,7 @@ def test_estimate_ctf_2d_image():
     """Test estimate_ctf with a 2D image."""
     # Create a synthetic 2D image
     image = torch.randn(1024, 1024)
-    
+
     # Define typical cryo-EM parameters
     pixel_spacing_angstroms = 1.0
     defocus_grid_resolution = (1, 3, 3)  # (t, h, w)
@@ -18,9 +17,9 @@ def test_estimate_ctf_2d_image():
     spherical_aberration_mm = 2.7
     amplitude_contrast_fraction = 0.1
     patch_sidelength = 128
-    
-    # Run estimation
-    defocus_field = estimate_ctf(
+
+    # Run estimation (returns mean_ps, result1d, result2d)
+    _mean_ps, _result1d, result2d = estimate_ctf(
         image=image,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
         defocus_grid_resolution=defocus_grid_resolution,
@@ -29,23 +28,25 @@ def test_estimate_ctf_2d_image():
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast_fraction=amplitude_contrast_fraction,
-        patch_sidelength=patch_sidelength
+        patch_sidelength=patch_sidelength,
     )
-    
-    # Check output shape matches defocus_grid_resolution
+
+    # Check defocus model grid shape matches defocus_grid_resolution
+    # (defocus_model.data has shape (1, t, h, w), squeeze to (t, h, w))
+    defocus_field = result2d.defocus_model.data.squeeze(0)
     expected_shape = defocus_grid_resolution
     assert defocus_field.shape == expected_shape
-    
+
     # Check defocus values are within reasonable range
-    #assert torch.all(defocus_field >= defocus_range_microns[0])
-    #assert torch.all(defocus_field <= defocus_range_microns[1])
+    # assert torch.all(defocus_field >= defocus_range_microns[0])
+    # assert torch.all(defocus_field <= defocus_range_microns[1])
 
 
 def test_estimate_ctf_3d_image():
     """Test estimate_ctf with a 3D image stack."""
     # Create a synthetic 3D image stack
     image = torch.randn(4, 256, 256)
-    
+
     # Define typical cryo-EM parameters
     pixel_spacing_angstroms = 1.5
     defocus_grid_resolution = (4, 2, 2)  # (t, h, w)
@@ -55,9 +56,9 @@ def test_estimate_ctf_3d_image():
     spherical_aberration_mm = 2.0
     amplitude_contrast_fraction = 0.07
     patch_sidelength = 64
-    
-    # Run estimation
-    defocus_field = estimate_ctf(
+
+    # Run estimation (returns mean_ps, result1d, result2d)
+    _mean_ps, _result1d, result2d = estimate_ctf(
         image=image,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
         defocus_grid_resolution=defocus_grid_resolution,
@@ -66,14 +67,15 @@ def test_estimate_ctf_3d_image():
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast_fraction=amplitude_contrast_fraction,
-        patch_sidelength=patch_sidelength
+        patch_sidelength=patch_sidelength,
     )
-    
-    # Check output shape matches defocus_grid_resolution
+
+    # Check defocus model grid shape matches defocus_grid_resolution
+    # (defocus_model.data has shape (1, t, h, w), squeeze to (t, h, w))
+    defocus_field = result2d.defocus_model.data.squeeze(0)
     expected_shape = defocus_grid_resolution
     assert defocus_field.shape == expected_shape
-    
-    # Check defocus values are within reasonable range
-    #assert torch.all(defocus_field >= defocus_range_microns[0])
-    #assert torch.all(defocus_field <= defocus_range_microns[1])
 
+    # Check defocus values are within reasonable range
+    # assert torch.all(defocus_field >= defocus_range_microns[0])
+    # assert torch.all(defocus_field <= defocus_range_microns[1])

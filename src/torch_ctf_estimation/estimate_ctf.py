@@ -1,13 +1,16 @@
+"""Estimate CTF from a 2D or 3D image."""
+
+from typing import Optional
+
 import einops
 import torch
-
 from torch_fourier_rescale import fourier_rescale_2d
 
 from torch_ctf_estimation.estimate_defocus_1d import estimate_defocus_1d
 from torch_ctf_estimation.estimate_defocus_2d import estimate_defocus_2d
 from torch_ctf_estimation.patch_grid import extract_patch_grid
-from torch_ctf_estimation.utils.normalize import normalize_image
 from torch_ctf_estimation.utils.estimate_background_2d import estimate_background_2d
+from torch_ctf_estimation.utils.normalize import normalize_image
 
 
 def estimate_ctf(
@@ -20,14 +23,64 @@ def estimate_ctf(
     spherical_aberration_mm: float,
     amplitude_contrast_fraction: float,
     patch_sidelength: int = 512,
-    debug: bool = False
-):
+    debug: bool = False,
+    optimize_astigmatism: bool = False,
+    optimize_envelope_1d: bool = True,
+    b_range_1d: tuple[float, float] = (0.0, 100.0),
+    b_step_1d: float = 1.0,
+    initial_envelope_B: Optional[float] = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Estimate CTF from a 2D or 3D image.
+
+    Parameters
+    ----------
+    image: torch.Tensor
+        §`(t, h, w)` or `(h, w)` array containing 2D or 3D image data.
+    pixel_spacing_angstroms: float
+        Isotropic pixel spacing in angstroms.
+    defocus_grid_resolution: tuple[int, int, int]
+        Resolution of the defocus grid.
+    frequency_fit_range_angstroms: tuple[float, float]
+        `(low, high)` spatial frequency cutoffs for fitting in angstroms.
+    defocus_range_microns: tuple[float, float]
+        `(low, high)` defoci in microns for initial 1D fit.
+    voltage_kev: float
+        Acceleration voltage in keV.
+    spherical_aberration_mm: float
+        Spherical aberration in mm.
+    amplitude_contrast_fraction: float
+        Amplitude contrast fraction.
+    patch_sidelength: int
+        Sidelength of the patches to extract from the image.
+    debug: bool
+        Whether to return debug information.
+    optimize_astigmatism: bool
+        Whether to optimize the astigmatism.
+    optimize_envelope_1d: bool
+        Whether to optimize the envelope in 1D.
+    b_range_1d: tuple[float, float]
+        `(low, high)` B-factor range for envelope optimization in 1D.
+    b_step_1d: float
+        Step size for envelope optimization in 1D.
+    initial_envelope_B: Optional[float]
+        Initial B-factor for envelope optimization in 2D.
+
+    Returns
+    -------
+    mean_ps: torch.Tensor
+        Mean power spectrum of the patches.
+    result1d: Defocus1DResults
+        Results from 1D defocus estimation.
+    result2d: Defocus2DResults
+        Results from 2D defocus estimation.
+    """
     # coerce to float
     image = image.float()
 
     # pack image to (t, h, w)
     image, ps = einops.pack([image], pattern="* h w")
-    
+
     # grab image dimensions
     t, h, w = image.shape
 
@@ -37,21 +90,19 @@ def estimate_ctf(
     # target_spacing = 0.5 * cutoff
     new_spacing = max(3.0, pixel_spacing_angstroms)
     image, _ = fourier_rescale_2d(
-        image=image,
-        source_spacing=pixel_spacing_angstroms,
-        target_spacing=new_spacing
+        image=image, source_spacing=pixel_spacing_angstroms, target_spacing=new_spacing
     )
     # extract grid of 2D patches with 50% overlap
     patches, patch_centers = extract_patch_grid(
         images=image,
         patch_shape=(1, patch_sidelength, patch_sidelength),
-        patch_step=(1, patch_sidelength // 2, patch_sidelength // 2)
+        patch_step=(1, patch_sidelength // 2, patch_sidelength // 2),
     )
     patches = einops.rearrange(patches, "t gh gw 1 ph pw -> t gh gw ph pw")
 
     # calculate power spectra of all patches and mean of all ps
     patch_ps = torch.abs(torch.fft.rfftn(patches, dim=(-2, -1))) ** 2
-    mean_ps = einops.reduce(patch_ps, '... ph pw -> ph pw', reduction='mean')
+    mean_ps = einops.reduce(patch_ps, "... ph pw -> ph pw", reduction="mean")
 
     # estimate defocus in 1D from mean of power spectra
     result1d = estimate_defocus_1d(
@@ -62,10 +113,12 @@ def estimate_ctf(
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast=amplitude_contrast_fraction,
-        pixel_spacing_angstroms=new_spacing
+        pixel_spacing_angstroms=new_spacing,
+        optimize_envelope=optimize_envelope_1d,
+        b_range=b_range_1d,
+        b_step=b_step_1d,
     )
 
-    
     # estimate 2D background and subtract prior to 2D defocus estimation
     background_2d = estimate_background_2d(
         power_spectrum=mean_ps,
@@ -74,16 +127,36 @@ def estimate_ctf(
     patch_ps -= background_2d
 
     # estimate defocus in 2D with gradient based optimisation
-    image_dimension_lengths = torch.tensor([t - 1, h - 1, w - 1]).float().to(patch_ps.device)
+    image_dimension_lengths = (
+        torch.tensor([t - 1, h - 1, w - 1]).float().to(patch_ps.device)
+    )
     normalised_patch_positions = patch_centers / image_dimension_lengths
-    result2d = estimate_defocus_2d(
+
+    initial_envelope_B_2d = initial_envelope_B
+    if initial_envelope_B_2d is None and result1d.ctf_model.envelope_B is not None:
+        # use 1D-estimated B for 2D envelope
+        if isinstance(result1d.ctf_model.envelope_B, torch.Tensor):
+            initial_envelope_B_2d = float(
+                result1d.ctf_model.envelope_B.detach().cpu().item()
+            )
+        else:
+            initial_envelope_B_2d = float(result1d.ctf_model.envelope_B)
+    if initial_envelope_B_2d is None:
+        initial_envelope_B_2d = 0.0
+
+    estimate_defocus_2d_kwargs = dict(
         patch_power_spectra=patch_ps,
         normalised_patch_positions=normalised_patch_positions,
         defocus_grid_resolution=defocus_grid_resolution,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         initial_defocus=result1d.ctf_model.defocus_um,
         pixel_spacing_angstroms=new_spacing,
-        n_patches_per_batch=40,
+        n_patches_per_batch=100,
+        debug=debug,
+        optimize_astigmatism=optimize_astigmatism,
+        initial_envelope_B=initial_envelope_B_2d,
     )
+
+    result2d = estimate_defocus_2d(**estimate_defocus_2d_kwargs)
 
     return mean_ps, result1d, result2d
