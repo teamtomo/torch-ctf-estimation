@@ -13,7 +13,17 @@ from torch_fourier_filter.bandpass import bandpass_filter
 from torch_fourier_filter.envelopes import b_envelope
 from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
-from torch_ctf_estimation.models import LinearDefocusModel
+from torch_ctf_estimation.models import LinearDefocusModel, QuadraticPhaseShiftModel
+
+# Penalty weight for unit-circle constraint on (u,v): lambda*(u^2+v^2-1)^2
+PHASE_SHIFT_UNIT_CIRCLE_PENALTY = 0.1
+
+
+def _astig_angle_to_m90_p90(angle_0_180: float) -> float:
+    """Map astigmatism angle from [0, 180) to [-90, 90] for output."""
+    a = angle_0_180 % 180.0
+    return a if a <= 90.0 else a - 180.0
+
 
 try:
     from torch_cubic_spline_grids import CubicCatmullRomGrid1d
@@ -44,6 +54,17 @@ class Defocus2DResults(BaseModel):
         None  # set when linear + pixel_spacing/size known
     )
     tilt_magnitude_deg: Optional[float] = None
+    # Phase shift (when optimize_phase_shift=True)
+    phase_shift_degrees: Optional[float] = None
+    phase_shift_model_type: Optional[Literal["grid", "quadratic"]] = None
+    phase_shift_model: Optional[
+        Union[
+            CubicCatmullRomGrid3d,
+            QuadraticPhaseShiftModel,
+            tuple[CubicCatmullRomGrid3d, CubicCatmullRomGrid3d],
+        ]
+    ] = None
+    phase_shift_trace: Optional[list[float]] = None
 
     @field_serializer("*", mode="wrap")  # type: ignore[misc]
     def _serialize_field(
@@ -55,6 +76,14 @@ class Defocus2DResults(BaseModel):
             return value.to_dict()
         if isinstance(value, LinearDefocusModel):
             return value.model_dump()
+        if isinstance(value, QuadraticPhaseShiftModel):
+            return value.model_dump()
+        if isinstance(value, tuple) and len(value) == 2:
+            a, b = value
+            if isinstance(a, CubicCatmullRomGrid3d) and isinstance(
+                b, CubicCatmullRomGrid3d
+            ):
+                return {"u": a.to_dict(), "v": b.to_dict()}
         return handler(value)
 
     def linear_tilt_axis_and_magnitude_deg(
@@ -109,7 +138,7 @@ def linear_tilt_axis_and_magnitude_deg(
 def _shared_astigmatism_and_env(
     *,
     patch_power_spectra: torch.Tensor,
-    patch_sidelength: int,
+    image_shape: tuple[int, int],
     device: torch.device,
     frequency_fit_range_angstroms: tuple[float, float],
     pixel_spacing_angstroms: float,
@@ -139,7 +168,7 @@ def _shared_astigmatism_and_env(
         low=low_fftfreq,
         high=high_fftfreq,
         falloff=0,
-        image_shape=(patch_sidelength, patch_sidelength),
+        image_shape=image_shape,
         rfft=True,
         fftshift=False,
         device=device,
@@ -159,7 +188,7 @@ def _shared_astigmatism_and_env(
     envelope_B = torch.tensor(initial_envelope_B, device=device)
     env_2d = b_envelope(
         B=envelope_B,
-        image_shape=(patch_sidelength, patch_sidelength),
+        image_shape=image_shape,
         pixel_size=pixel_spacing_angstroms,
         rfft=True,
         fftshift=False,
@@ -193,13 +222,19 @@ def estimate_defocus_2d_grid(
     astigmatism_lr: float = 0.05,
     astigmatism_angle_lr: float = 50.0,
     debug: bool = False,
+    optimize_phase_shift: bool = False,
+    phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    initial_phase_shift: float = 0.0,
+    phase_shift_lr: float = 5.0,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a 3D spline grid over (t, x, y).
 
     See :func:`estimate_defocus_2d` for parameter descriptions.
     """
-    patch_sidelength = patch_power_spectra.shape[-2]
+    # Derive spatial image shape from rfft PS (H, W_rfft) -> (H, (W_rfft-1)*2)
+    ph, pw_rfft = patch_power_spectra.shape[-2], patch_power_spectra.shape[-1]
+    image_shape = (ph, (pw_rfft - 1) * 2)
     device = patch_power_spectra.device
     nt, _, _ = defocus_grid_resolution
     if nt == 1:
@@ -213,6 +248,45 @@ def estimate_defocus_2d_grid(
     defocus_model_obj = CubicCatmullRomGrid3d.from_grid_data(defocus_grid_data).to(
         device
     )
+    phase_shift_u_grid_model = None
+    phase_shift_v_grid_model = None
+    phase_shift_quad_params = None
+    if optimize_phase_shift:
+        if phase_shift_model == "grid":
+            theta_rad = initial_phase_shift * (math.pi / 180.0)
+            u_init = math.cos(2.0 * theta_rad)
+            v_init = math.sin(2.0 * theta_rad)
+            phase_shift_u_grid_data = (
+                torch.ones(size=defocus_grid_resolution, device=device) * u_init
+            )
+            phase_shift_v_grid_data = (
+                torch.ones(size=defocus_grid_resolution, device=device) * v_init
+            )
+            phase_shift_u_grid_model = CubicCatmullRomGrid3d.from_grid_data(
+                phase_shift_u_grid_data
+            ).to(device)
+            phase_shift_v_grid_model = CubicCatmullRomGrid3d.from_grid_data(
+                phase_shift_v_grid_data
+            ).to(device)
+        else:
+            # quadratic: f(x,y)=C+g*s+k*s^2, s=x*cos(alpha)+y*sin(alpha).
+            # 4 params: C, g, k, alpha.
+            phase_shift_quad_params = {
+                "C": torch.nn.Parameter(
+                    torch.tensor(
+                        initial_phase_shift, device=device, dtype=torch.float32
+                    )
+                ),
+                "g": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+                "k": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+                "alpha": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+            }
 
     (
         bp_filter,
@@ -225,7 +299,7 @@ def estimate_defocus_2d_grid(
         env_2d,
     ) = _shared_astigmatism_and_env(
         patch_power_spectra=patch_power_spectra,
-        patch_sidelength=patch_sidelength,
+        image_shape=image_shape,
         device=device,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
@@ -244,11 +318,26 @@ def estimate_defocus_2d_grid(
                 {"params": [angle_u, angle_v], "lr": astigmatism_angle_lr},
             ]
         )
+    if phase_shift_u_grid_model is not None and phase_shift_v_grid_model is not None:
+        param_groups.append(
+            {"params": phase_shift_u_grid_model.parameters(), "lr": phase_shift_lr}
+        )
+        param_groups.append(
+            {"params": phase_shift_v_grid_model.parameters(), "lr": phase_shift_lr}
+        )
+    if phase_shift_quad_params is not None:
+        param_groups.append(
+            {
+                "params": list(phase_shift_quad_params.values()),
+                "lr": phase_shift_lr,
+            }
+        )
     optimiser = torch.optim.Adam(params=param_groups)
 
     defocus_models: list[torch.Tensor] = []
     astigmatism_trace: list[float] = []
     astigmatism_angle_trace: list[float] = []
+    phase_shift_trace: list[float] = []
     loss_trace: list[float] = []
     T = patch_power_spectra.shape[0]
     simulated_ctf2s = None
@@ -291,15 +380,39 @@ def estimate_defocus_2d_grid(
             positions_t = normalised_patch_positions[t_idx]
             predicted_defocus_t = defocus_model_obj(positions_t)
             predicted_defocus_t = einops.rearrange(predicted_defocus_t, "... 1 -> ...")
+            u_t = v_t = None
+            if (
+                phase_shift_u_grid_model is not None
+                and phase_shift_v_grid_model is not None
+            ):
+                u_t = phase_shift_u_grid_model(positions_t).squeeze(-1)
+                v_t = phase_shift_v_grid_model(positions_t).squeeze(-1)
+                phase_shift_t = torch.remainder(
+                    0.5 * torch.atan2(v_t, u_t) * (180.0 / math.pi), 180.0
+                )
+            elif phase_shift_quad_params is not None:
+                # f(x,y) = C + g*s + k*s^2, s = x*cos(alpha)+y*sin(alpha)
+                x = 2.0 * positions_t[..., 1] - 1.0
+                y = 2.0 * positions_t[..., 2] - 1.0
+                alpha = phase_shift_quad_params["alpha"]
+                s = x * torch.cos(alpha) + y * torch.sin(alpha)
+                phase_shift_t = (
+                    phase_shift_quad_params["C"]
+                    + phase_shift_quad_params["g"] * s
+                    + phase_shift_quad_params["k"] * (s**2)
+                )
+                phase_shift_t = torch.clamp(phase_shift_t, min=0.0, max=180.0)
+            else:
+                phase_shift_t = 0
             simulated_ctf2s_t = (
                 calculate_ctf_2d(
                     defocus=predicted_defocus_t,
                     voltage=300,
                     spherical_aberration=2.7,
                     amplitude_contrast=0.10,
-                    phase_shift=0,
+                    phase_shift=phase_shift_t,
                     pixel_size=pixel_spacing_angstroms,
-                    image_shape=(patch_sidelength, patch_sidelength),
+                    image_shape=image_shape,
                     astigmatism=astig_clamped,
                     astigmatism_angle=astig_angle_clamped,
                     rfft=True,
@@ -321,8 +434,20 @@ def estimate_defocus_2d_grid(
             data_norm = (data_flat - data_flat.mean()) / (data_flat.std() + eps)
             C_t = (model_norm * data_norm).sum()
             loss_t = -C_t
+            if u_t is not None and v_t is not None:
+                penalty_t = ((u_t**2 + v_t**2 - 1.0) ** 2).mean()
+                loss_t = loss_t + PHASE_SHIFT_UNIT_CIRCLE_PENALTY * penalty_t
             (loss_t / T).backward()
             loss_t_list.append(loss_t.detach())
+
+        if (
+            phase_shift_u_grid_model is not None
+            and phase_shift_v_grid_model is not None
+        ):
+            pass  # no clamp: (u,v) unit circle handled by penalty
+        if phase_shift_quad_params is not None:
+            with torch.no_grad():
+                phase_shift_quad_params["C"].clamp_(min=0.0, max=180.0)
 
         if len(loss_t_list) == 0:
             if optimize_astigmatism:
@@ -342,7 +467,7 @@ def estimate_defocus_2d_grid(
                     )
                     angle_u.fill_(_angle_u_init)
                     angle_v.fill_(_angle_v_init)
-            continue
+                continue
         loss_trace.append(float(mean_loss.cpu().item()))
         if optimize_astigmatism:
             if astigmatism.grad is not None and (
@@ -394,20 +519,49 @@ def estimate_defocus_2d_grid(
             astigmatism_trace.append(float(astigmatism.detach().cpu().item()))
             _norm = torch.sqrt(angle_u.detach() ** 2 + angle_v.detach() ** 2 + 1e-8)
             _a_rad = torch.atan2(angle_v.detach() / _norm, angle_u.detach() / _norm)
-            astigmatism_angle_trace.append(
-                float((_a_rad * (180.0 / math.pi) + 180.0) % 180.0)
-            )
+            _a_deg = float((_a_rad * (180.0 / math.pi) + 180.0) % 180.0)
+            astigmatism_angle_trace.append(_astig_angle_to_m90_p90(_a_deg))
+        if (
+            phase_shift_u_grid_model is not None
+            and phase_shift_v_grid_model is not None
+        ):
+            _mu = phase_shift_u_grid_model.data.detach().cpu().mean().item()
+            _mv = phase_shift_v_grid_model.data.detach().cpu().mean().item()
+            _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+            phase_shift_trace.append(min(_p, 180.0 - _p))
+        if phase_shift_quad_params is not None:
+            _c = float(phase_shift_quad_params["C"].detach().cpu().item())
+            phase_shift_trace.append(min(_c, 180.0 - _c))
 
     final_astigmatism = float(astigmatism.detach().cpu().item())
     _fn = torch.sqrt(angle_u.detach() ** 2 + angle_v.detach() ** 2 + 1e-8)
     _fa_rad = torch.atan2(angle_v.detach() / _fn, angle_u.detach() / _fn)
-    final_astigmatism_angle = float(
-        (_fa_rad.cpu().item() * (180.0 / math.pi) + 180.0) % 180.0
-    )
+    _fa_deg = float((_fa_rad.cpu().item() * (180.0 / math.pi) + 180.0) % 180.0)
+    final_astigmatism_angle = _astig_angle_to_m90_p90(_fa_deg)
     final_envelope_B = float(envelope_B.detach().cpu().item())
     mean_defocus = float(defocus_model_obj.data.detach().cpu().mean().item())
     final_defocus_u = mean_defocus + final_astigmatism / 2.0
     final_defocus_v = mean_defocus - final_astigmatism / 2.0
+    final_phase_shift_deg = None
+    final_phase_shift_model_obj = None
+    if phase_shift_u_grid_model is not None and phase_shift_v_grid_model is not None:
+        _mu = phase_shift_u_grid_model.data.detach().cpu().mean().item()
+        _mv = phase_shift_v_grid_model.data.detach().cpu().mean().item()
+        _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+        final_phase_shift_deg = min(_p, 180.0 - _p)
+        final_phase_shift_model_obj = (
+            phase_shift_u_grid_model,
+            phase_shift_v_grid_model,
+        )
+    elif phase_shift_quad_params is not None:
+        _c = float(phase_shift_quad_params["C"].detach().cpu().item())
+        final_phase_shift_deg = min(_c, 180.0 - _c)
+        final_phase_shift_model_obj = QuadraticPhaseShiftModel(
+            C=float(phase_shift_quad_params["C"].detach().cpu().item()),
+            g=float(phase_shift_quad_params["g"].detach().cpu().item()),
+            k=float(phase_shift_quad_params["k"].detach().cpu().item()),
+            alpha_rad=float(phase_shift_quad_params["alpha"].detach().cpu().item()),
+        )
 
     if debug:
         return Defocus2DResults(
@@ -426,6 +580,12 @@ def estimate_defocus_2d_grid(
             loss_trace=loss_trace,
             defocus_u=final_defocus_u,
             defocus_v=final_defocus_v,
+            phase_shift_degrees=final_phase_shift_deg,
+            phase_shift_model_type=phase_shift_model if optimize_phase_shift else None,
+            phase_shift_model=final_phase_shift_model_obj
+            if optimize_phase_shift
+            else None,
+            phase_shift_trace=phase_shift_trace if optimize_phase_shift else None,
         )
     return Defocus2DResults(
         defocus_model_type="grid",
@@ -435,6 +595,10 @@ def estimate_defocus_2d_grid(
         envelope_B=final_envelope_B,
         defocus_u=final_defocus_u,
         defocus_v=final_defocus_v,
+        phase_shift_degrees=final_phase_shift_deg,
+        phase_shift_model_type=phase_shift_model if optimize_phase_shift else None,
+        phase_shift_model=final_phase_shift_model_obj if optimize_phase_shift else None,
+        phase_shift_trace=phase_shift_trace if optimize_phase_shift else None,
     )
 
 
@@ -459,6 +623,10 @@ def estimate_defocus_2d_linear(
     defocus_gradient_angle_lr: float = 50.0,
     fix_defocus_0: Optional[float] = None,
     debug: bool = False,
+    optimize_phase_shift: bool = False,
+    phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    initial_phase_shift: float = 0.0,
+    phase_shift_lr: float = 5.0,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a linear (tilt) model in (x, y).
@@ -467,13 +635,55 @@ def estimate_defocus_2d_linear(
     defocus_grid_resolution (nt) is used.
     See :func:`estimate_defocus_2d` for other parameter descriptions.
     """
-    patch_sidelength = patch_power_spectra.shape[-2]
+    # Derive spatial image shape from rfft PS (H, W_rfft) -> (H, (W_rfft-1)*2)
+    ph, pw_rfft = patch_power_spectra.shape[-2], patch_power_spectra.shape[-1]
+    image_shape = (ph, (pw_rfft - 1) * 2)
     device = patch_power_spectra.device
     nt, _, _ = defocus_grid_resolution
     if nt == 1:
         patch_power_spectra = einops.reduce(
             patch_power_spectra, "t ... -> 1 ...", reduction="mean"
         )
+
+    phase_shift_u_grid_model = None
+    phase_shift_v_grid_model = None
+    phase_shift_quad_params = None
+    if optimize_phase_shift:
+        if phase_shift_model == "grid":
+            theta_rad = initial_phase_shift * (math.pi / 180.0)
+            u_init = math.cos(2.0 * theta_rad)
+            v_init = math.sin(2.0 * theta_rad)
+            phase_shift_u_grid_data = (
+                torch.ones(size=defocus_grid_resolution, device=device) * u_init
+            )
+            phase_shift_v_grid_data = (
+                torch.ones(size=defocus_grid_resolution, device=device) * v_init
+            )
+            phase_shift_u_grid_model = CubicCatmullRomGrid3d.from_grid_data(
+                phase_shift_u_grid_data
+            ).to(device)
+            phase_shift_v_grid_model = CubicCatmullRomGrid3d.from_grid_data(
+                phase_shift_v_grid_data
+            ).to(device)
+        else:
+            # quadratic: f(x,y)=C+g*s+k*s^2, s=x*cos(alpha)+y*sin(alpha).
+            # 4 params: C, g, k, alpha.
+            phase_shift_quad_params = {
+                "C": torch.nn.Parameter(
+                    torch.tensor(
+                        initial_phase_shift, device=device, dtype=torch.float32
+                    )
+                ),
+                "g": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+                "k": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+                "alpha": torch.nn.Parameter(
+                    torch.tensor(0.0, device=device, dtype=torch.float32)
+                ),
+            }
 
     _grad_angle_rad = initial_defocus_gradient_angle * math.pi / 180.0
     _grad_angle_u_init = math.cos(_grad_angle_rad)
@@ -539,7 +749,7 @@ def estimate_defocus_2d_linear(
         env_2d,
     ) = _shared_astigmatism_and_env(
         patch_power_spectra=patch_power_spectra,
-        patch_sidelength=patch_sidelength,
+        image_shape=image_shape,
         device=device,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
@@ -604,11 +814,23 @@ def estimate_defocus_2d_linear(
                 {"params": [angle_u, angle_v], "lr": astigmatism_angle_lr},
             ]
         )
+    if phase_shift_u_grid_model is not None and phase_shift_v_grid_model is not None:
+        param_groups.append(
+            {"params": phase_shift_u_grid_model.parameters(), "lr": phase_shift_lr}
+        )
+        param_groups.append(
+            {"params": phase_shift_v_grid_model.parameters(), "lr": phase_shift_lr}
+        )
+    if phase_shift_quad_params is not None:
+        param_groups.append(
+            {"params": list(phase_shift_quad_params.values()), "lr": phase_shift_lr}
+        )
     optimiser = torch.optim.Adam(params=param_groups)
 
     defocus_models: list[torch.Tensor] = []
     astigmatism_trace = []
     astigmatism_angle_trace = []
+    phase_shift_trace_linear = []
     loss_trace = []
     T = patch_power_spectra.shape[0]
     simulated_ctf2s = None
@@ -684,15 +906,39 @@ def estimate_defocus_2d_linear(
             ) * torch.sin(angle_rad)
             predicted_defocus_t = defocus_0_t + grad_mag_t * projected
 
+            u_t = v_t = None
+            if (
+                phase_shift_u_grid_model is not None
+                and phase_shift_v_grid_model is not None
+            ):
+                u_t = phase_shift_u_grid_model(positions_t).squeeze(-1)
+                v_t = phase_shift_v_grid_model(positions_t).squeeze(-1)
+                phase_shift_t = torch.remainder(
+                    0.5 * torch.atan2(v_t, u_t) * (180.0 / math.pi), 180.0
+                )
+            elif phase_shift_quad_params is not None:
+                x = 2.0 * x_norm - 1.0
+                y = 2.0 * y_norm - 1.0
+                alpha = phase_shift_quad_params["alpha"]
+                s = x * torch.cos(alpha) + y * torch.sin(alpha)
+                phase_shift_t = (
+                    phase_shift_quad_params["C"]
+                    + phase_shift_quad_params["g"] * s
+                    + phase_shift_quad_params["k"] * (s**2)
+                )
+                phase_shift_t = torch.clamp(phase_shift_t, min=0.0, max=180.0)
+            else:
+                phase_shift_t = 0
+
             simulated_ctf2s_t = (
                 calculate_ctf_2d(
                     defocus=predicted_defocus_t,
                     voltage=300,
                     spherical_aberration=2.7,
                     amplitude_contrast=0.10,
-                    phase_shift=0,
+                    phase_shift=phase_shift_t,
                     pixel_size=pixel_spacing_angstroms,
-                    image_shape=(patch_sidelength, patch_sidelength),
+                    image_shape=image_shape,
                     astigmatism=astig_clamped,
                     astigmatism_angle=astig_angle_clamped,
                     rfft=True,
@@ -714,6 +960,9 @@ def estimate_defocus_2d_linear(
             data_norm = (data_flat - data_flat.mean()) / (data_flat.std() + eps)
             C_t = (model_norm * data_norm).sum()
             loss_t = -C_t
+            if u_t is not None and v_t is not None:
+                penalty_t = ((u_t**2 + v_t**2 - 1.0) ** 2).mean()
+                loss_t = loss_t + PHASE_SHIFT_UNIT_CIRCLE_PENALTY * penalty_t
             (loss_t / T).backward()
             loss_t_list.append(loss_t.detach())
 
@@ -782,6 +1031,9 @@ def estimate_defocus_2d_linear(
                     angle_v.fill_(_angle_v_init)
                 else:
                     astigmatism.clamp_(min=1e-6)
+        if phase_shift_quad_params is not None:
+            with torch.no_grad():
+                phase_shift_quad_params["C"].clamp_(min=0.0, max=180.0)
         with torch.no_grad():
             if defocus_0_spline_1d is not None:
                 assert grad_mag_spline_1d is not None
@@ -812,16 +1064,25 @@ def estimate_defocus_2d_linear(
             astigmatism_trace.append(float(astigmatism.detach().cpu().item()))
             _norm = torch.sqrt(angle_u.detach() ** 2 + angle_v.detach() ** 2 + 1e-8)
             _a_rad = torch.atan2(angle_v.detach() / _norm, angle_u.detach() / _norm)
-            astigmatism_angle_trace.append(
-                float((_a_rad * (180.0 / math.pi) + 180.0) % 180.0)
-            )
+            _a_deg = float((_a_rad * (180.0 / math.pi) + 180.0) % 180.0)
+            astigmatism_angle_trace.append(_astig_angle_to_m90_p90(_a_deg))
+        if (
+            phase_shift_u_grid_model is not None
+            and phase_shift_v_grid_model is not None
+        ):
+            _mu = phase_shift_u_grid_model.data.detach().cpu().mean().item()
+            _mv = phase_shift_v_grid_model.data.detach().cpu().mean().item()
+            _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+            phase_shift_trace_linear.append(min(_p, 180.0 - _p))
+        elif phase_shift_quad_params is not None:
+            _c = float(phase_shift_quad_params["C"].detach().cpu().item())
+            phase_shift_trace_linear.append(min(_c, 180.0 - _c))
 
     final_astigmatism = float(astigmatism.detach().cpu().item())
     _fn = torch.sqrt(angle_u.detach() ** 2 + angle_v.detach() ** 2 + 1e-8)
     _fa_rad = torch.atan2(angle_v.detach() / _fn, angle_u.detach() / _fn)
-    final_astigmatism_angle = float(
-        (_fa_rad.cpu().item() * (180.0 / math.pi) + 180.0) % 180.0
-    )
+    _fa_deg = float((_fa_rad.cpu().item() * (180.0 / math.pi) + 180.0) % 180.0)
+    final_astigmatism_angle = _astig_angle_to_m90_p90(_fa_deg)
     final_envelope_B = float(envelope_B.detach().cpu().item())
     if defocus_0_spline_1d is not None:
         mean_defocus = float(defocus_0_spline_1d.data.detach().cpu().mean().item())
@@ -901,6 +1162,26 @@ def estimate_defocus_2d_linear(
             else None
         ),
     )
+    final_phase_shift_deg_linear = None
+    final_phase_shift_model_obj_linear = None
+    if phase_shift_u_grid_model is not None and phase_shift_v_grid_model is not None:
+        _mu = phase_shift_u_grid_model.data.detach().cpu().mean().item()
+        _mv = phase_shift_v_grid_model.data.detach().cpu().mean().item()
+        _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+        final_phase_shift_deg_linear = min(_p, 180.0 - _p)
+        final_phase_shift_model_obj_linear = (
+            phase_shift_u_grid_model,
+            phase_shift_v_grid_model,
+        )
+    elif phase_shift_quad_params is not None:
+        _c = float(phase_shift_quad_params["C"].detach().cpu().item())
+        final_phase_shift_deg_linear = min(_c, 180.0 - _c)
+        final_phase_shift_model_obj_linear = QuadraticPhaseShiftModel(
+            C=float(phase_shift_quad_params["C"].detach().cpu().item()),
+            g=float(phase_shift_quad_params["g"].detach().cpu().item()),
+            k=float(phase_shift_quad_params["k"].detach().cpu().item()),
+            alpha_rad=float(phase_shift_quad_params["alpha"].detach().cpu().item()),
+        )
 
     if debug:
         return Defocus2DResults(
@@ -919,6 +1200,14 @@ def estimate_defocus_2d_linear(
             loss_trace=loss_trace,
             defocus_u=final_defocus_u,
             defocus_v=final_defocus_v,
+            phase_shift_degrees=final_phase_shift_deg_linear,
+            phase_shift_model_type=phase_shift_model if optimize_phase_shift else None,
+            phase_shift_model=final_phase_shift_model_obj_linear
+            if optimize_phase_shift
+            else None,
+            phase_shift_trace=phase_shift_trace_linear
+            if optimize_phase_shift
+            else None,
         )
     return Defocus2DResults(
         defocus_model_type="linear",
@@ -928,6 +1217,12 @@ def estimate_defocus_2d_linear(
         envelope_B=final_envelope_B,
         defocus_u=final_defocus_u,
         defocus_v=final_defocus_v,
+        phase_shift_degrees=final_phase_shift_deg_linear,
+        phase_shift_model_type=phase_shift_model if optimize_phase_shift else None,
+        phase_shift_model=final_phase_shift_model_obj_linear
+        if optimize_phase_shift
+        else None,
+        phase_shift_trace=phase_shift_trace_linear if optimize_phase_shift else None,
     )
 
 
@@ -953,6 +1248,10 @@ def estimate_defocus_2d(
     defocus_gradient_angle_lr: float = 50.0,
     fix_defocus_0: Optional[float] = None,
     debug: bool = False,
+    optimize_phase_shift: bool = False,
+    phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    initial_phase_shift: float = 0.0,
+    phase_shift_lr: float = 5.0,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D from a power spectrum.
@@ -1010,6 +1309,14 @@ def estimate_defocus_2d(
     debug : bool, optional
         If True, return extra fields (traces, simulated CTF², patch spectra).
         Default False.
+    optimize_phase_shift : bool, optional
+        Whether to estimate phase shift (0-180 deg) alongside defocus. Default False.
+    phase_shift_model : {"grid", "quadratic"}, optional
+        "grid" (per-patch) or "quadratic" (directional). Default "grid".
+    initial_phase_shift : float, optional
+        Initial phase shift in degrees when optimizing. Default 0.0.
+    phase_shift_lr : float, optional
+        Learning rate for phase shift parameters. Default 5.0.
 
     Returns
     -------
@@ -1033,6 +1340,10 @@ def estimate_defocus_2d(
             astigmatism_lr=astigmatism_lr,
             astigmatism_angle_lr=astigmatism_angle_lr,
             debug=debug,
+            optimize_phase_shift=optimize_phase_shift,
+            phase_shift_model=phase_shift_model,
+            initial_phase_shift=initial_phase_shift,
+            phase_shift_lr=phase_shift_lr,
         )
     return estimate_defocus_2d_linear(
         patch_power_spectra=patch_power_spectra,
@@ -1055,4 +1366,8 @@ def estimate_defocus_2d(
         defocus_gradient_angle_lr=defocus_gradient_angle_lr,
         fix_defocus_0=fix_defocus_0,
         debug=debug,
+        optimize_phase_shift=optimize_phase_shift,
+        phase_shift_model=phase_shift_model,
+        initial_phase_shift=initial_phase_shift,
+        phase_shift_lr=phase_shift_lr,
     )

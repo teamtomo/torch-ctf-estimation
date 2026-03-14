@@ -1,5 +1,6 @@
 """Estimate defocus in 1D from a power spectrum."""
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,7 +33,7 @@ class _Background1DResult:
 
 @dataclass
 class _GridSearch1DResult:
-    """Result of grid search over defocus and optional B-factor envelope."""
+    """Result of grid search over defocus and optional B-factor and phase shift."""
 
     best_defocus: torch.Tensor
     best_B: Optional[torch.Tensor]
@@ -40,6 +41,8 @@ class _GridSearch1DResult:
     cross_correlations_1d: torch.Tensor
     cross_correlations_2d: Optional[torch.Tensor]
     test_B_values: Optional[torch.Tensor]
+    best_phase_shift: Optional[torch.Tensor] = None
+    test_phase_shift_values: Optional[torch.Tensor] = None
 
 
 def fit_background_spline_1d(
@@ -140,6 +143,8 @@ def grid_search_defocus_and_envelope_1d(
     b_range: tuple[float, float] = (0.0, 100.0),
     b_step: float = 1.0,
     defocus_step: float = 0.01,
+    optimize_phase_shift: bool = False,
+    phase_shift_step: float = 5.0,
 ) -> _GridSearch1DResult:
     """
     Grid search over defocus (and optionally B-factor envelope) to maximise ZNCC.
@@ -170,11 +175,16 @@ def grid_search_defocus_and_envelope_1d(
         B-factor grid step when optimize_envelope is True.
     defocus_step : float
         Defocus grid step in microns.
+    optimize_phase_shift : bool
+        If True, also grid over phase shift (0-180° in steps of phase_shift_step).
+    phase_shift_step : float
+        Phase shift grid step in degrees when optimize_phase_shift is True. Default 5.0.
 
     Returns
     -------
     _GridSearch1DResult
-        Best defocus, best B (or None), test defoci, cross correlations, test B values.
+        Best defocus, best B (or None), test defoci, cross correlations, test B values,
+        and optionally best_phase_shift and test_phase_shift_values.
     """
     device = raps_in_fit_range.device
     dtype = raps_in_fit_range.dtype
@@ -190,20 +200,50 @@ def grid_search_defocus_and_envelope_1d(
         device=device,
         dtype=dtype,
     )
-    ctf2 = (
-        calculate_ctf_1d(
-            defocus=test_defoci,
-            voltage=voltage_kev,
-            spherical_aberration=spherical_aberration_mm,
-            amplitude_contrast=amplitude_contrast,
-            phase_shift=0,
-            pixel_size=pixel_spacing_angstroms,
-            n_samples=h // 2 + 1,
-            oversampling_factor=3,
+    test_phase_shift_values = None
+    if optimize_phase_shift:
+        test_phase_shift_values = torch.arange(
+            0, 180, phase_shift_step, device=device, dtype=dtype
         )
-        ** 2
-    )
-    simulated_ctf2_in_fit_range = ctf2[:, fit_mask]
+
+    if not optimize_phase_shift:
+        ctf2 = (
+            calculate_ctf_1d(
+                defocus=test_defoci,
+                voltage=voltage_kev,
+                spherical_aberration=spherical_aberration_mm,
+                amplitude_contrast=amplitude_contrast,
+                phase_shift=0,
+                pixel_size=pixel_spacing_angstroms,
+                n_samples=h // 2 + 1,
+                oversampling_factor=3,
+            )
+            ** 2
+        )
+        simulated_ctf2_in_fit_range = ctf2[:, fit_mask]
+    else:
+        # Grid over phase shift: for each phase, compute ctf2 over defoci,
+        # then combine with B
+        assert test_phase_shift_values is not None  # set when optimize_phase_shift
+        n_p = test_phase_shift_values.shape[0]
+        list_ctf2 = []
+        for i in range(n_p):
+            p = test_phase_shift_values[i].item()
+            ctf2_p = (
+                calculate_ctf_1d(
+                    defocus=test_defoci,
+                    voltage=voltage_kev,
+                    spherical_aberration=spherical_aberration_mm,
+                    amplitude_contrast=amplitude_contrast,
+                    phase_shift=p,
+                    pixel_size=pixel_spacing_angstroms,
+                    n_samples=h // 2 + 1,
+                    oversampling_factor=3,
+                )
+                ** 2
+            )
+            list_ctf2.append(ctf2_p)
+        simulated_ctf2_in_fit_range = torch.stack(list_ctf2, dim=0)[:, :, fit_mask]
 
     if optimize_envelope:
         b_low, b_high = b_range
@@ -220,12 +260,21 @@ def grid_search_defocus_and_envelope_1d(
             -(test_B_values[:, None] * spatial_freqs[None, :] ** 2) / 2.0
         )
         env_power_in_fit_range = env_power_full[:, fit_mask]
-        simulated_ctf2_expanded = simulated_ctf2_in_fit_range[:, None, :]
-        simulated_ctf2_with_env = (
-            simulated_ctf2_expanded * env_power_in_fit_range[None, :, :]
-        )
-        n_defocus, n_B, n_fit = simulated_ctf2_with_env.shape
-        simulated_ctf2_flat = simulated_ctf2_with_env.reshape(-1, n_fit)
+        if optimize_phase_shift:
+            # simulated_ctf2_in_fit_range: (n_p, n_defocus, n_fit)
+            simulated_ctf2_expanded = (
+                simulated_ctf2_in_fit_range[:, :, None, :]
+                * (env_power_in_fit_range[None, None, :, :])
+            )
+            n_p, n_defocus, n_B, n_fit = simulated_ctf2_expanded.shape
+            simulated_ctf2_flat = simulated_ctf2_expanded.reshape(-1, n_fit)
+        else:
+            simulated_ctf2_expanded = simulated_ctf2_in_fit_range[:, None, :]
+            simulated_ctf2_with_env = (
+                simulated_ctf2_expanded * env_power_in_fit_range[None, :, :]
+            )
+            n_defocus, n_B, n_fit = simulated_ctf2_with_env.shape
+            simulated_ctf2_flat = simulated_ctf2_with_env.reshape(-1, n_fit)
         simulated_ctf2_flat = simulated_ctf2_flat / torch.linalg.norm(
             simulated_ctf2_flat, dim=-1, keepdim=True
         )
@@ -234,29 +283,67 @@ def grid_search_defocus_and_envelope_1d(
             normalised_raps_in_fit_range,
             "b i, i -> b",
         )
-        zncc_2d = zncc_flat.reshape(n_defocus, n_B)
-        cross_correlations_1d = zncc_2d.max(dim=1).values
-        cross_correlations_2d = zncc_2d
-        max_correlation_idx = torch.argmax(zncc_flat)
-        best_defocus_idx = max_correlation_idx // n_B
-        best_B_idx = max_correlation_idx % n_B
-        best_defocus = test_defoci[best_defocus_idx]
-        best_B = test_B_values[best_B_idx]
+        if optimize_phase_shift:
+            zncc_3d = zncc_flat.reshape(n_p, n_defocus, n_B)
+            cross_correlations_2d = zncc_3d.max(dim=0).values
+            cross_correlations_1d = torch.amax(zncc_3d, dim=(0, 2))
+            max_correlation_idx = torch.argmax(zncc_flat)
+            idx = max_correlation_idx.item()
+            best_p_idx = idx // (n_defocus * n_B)
+            rest = idx % (n_defocus * n_B)
+            best_defocus_idx = rest // n_B
+            best_B_idx = rest % n_B
+            best_defocus = test_defoci[best_defocus_idx]
+            best_B = test_B_values[best_B_idx]
+            assert test_phase_shift_values is not None
+            best_phase_shift = test_phase_shift_values[best_p_idx]
+        else:
+            zncc_2d = zncc_flat.reshape(n_defocus, n_B)
+            cross_correlations_1d = zncc_2d.max(dim=1).values
+            cross_correlations_2d = zncc_2d
+            max_correlation_idx = torch.argmax(zncc_flat)
+            best_defocus_idx = max_correlation_idx // n_B
+            best_B_idx = max_correlation_idx % n_B
+            best_defocus = test_defoci[best_defocus_idx]
+            best_B = test_B_values[best_B_idx]
+            best_phase_shift = None
     else:
         test_B_values = None
         cross_correlations_2d = None
-        simulated_ctf2_in_fit_range = simulated_ctf2_in_fit_range / torch.linalg.norm(
-            simulated_ctf2_in_fit_range, dim=-1, keepdim=True
-        )
-        zncc = einops.einsum(
-            simulated_ctf2_in_fit_range,
-            normalised_raps_in_fit_range,
-            "b i, i -> b",
-        )
-        cross_correlations_1d = zncc
-        max_correlation_idx = torch.argmax(zncc)
-        best_defocus = test_defoci[max_correlation_idx]
-        best_B = None
+        if optimize_phase_shift:
+            # (n_p, n_defocus, n_fit)
+            simulated_ctf2_in_fit_range = (
+                simulated_ctf2_in_fit_range
+                / torch.linalg.norm(simulated_ctf2_in_fit_range, dim=-1, keepdim=True)
+            )
+            zncc = einops.einsum(
+                simulated_ctf2_in_fit_range,
+                normalised_raps_in_fit_range,
+                "p d i, i -> p d",
+            )
+            cross_correlations_1d = zncc.max(dim=0).values
+            max_correlation_idx = torch.argmax(zncc)
+            best_p_idx = (max_correlation_idx // zncc.shape[1]).item()
+            best_d_idx = (max_correlation_idx % zncc.shape[1]).item()
+            best_defocus = test_defoci[best_d_idx]
+            best_B = None
+            assert test_phase_shift_values is not None
+            best_phase_shift = test_phase_shift_values[best_p_idx]
+        else:
+            simulated_ctf2_in_fit_range = (
+                simulated_ctf2_in_fit_range
+                / torch.linalg.norm(simulated_ctf2_in_fit_range, dim=-1, keepdim=True)
+            )
+            zncc = einops.einsum(
+                simulated_ctf2_in_fit_range,
+                normalised_raps_in_fit_range,
+                "b i, i -> b",
+            )
+            cross_correlations_1d = zncc
+            max_correlation_idx = torch.argmax(zncc)
+            best_defocus = test_defoci[max_correlation_idx]
+            best_B = None
+            best_phase_shift = None
 
     return _GridSearch1DResult(
         best_defocus=best_defocus,
@@ -265,6 +352,8 @@ def grid_search_defocus_and_envelope_1d(
         cross_correlations_1d=cross_correlations_1d,
         cross_correlations_2d=cross_correlations_2d,
         test_B_values=test_B_values,
+        best_phase_shift=best_phase_shift,
+        test_phase_shift_values=test_phase_shift_values,
     )
 
 
@@ -284,7 +373,11 @@ def refine_defocus_and_b_factor_1d(
     n_iterations: int = 100,
     defocus_lr: float = 0.01,
     b_factor_lr: float = 1.0,
-) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    initial_phase_shift: Optional[float] = None,
+    optimize_phase_shift: bool = False,
+    phase_shift_lr: float = 5.0,
+    phase_shift_range: tuple[float, float] = (0.0, 180.0),
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Refine defocus (and optionally B factor) by gradient descent to maximise ZNCC.
 
@@ -318,11 +411,20 @@ def refine_defocus_and_b_factor_1d(
         Learning rate for defocus. Default 0.001.
     b_factor_lr : float
         Learning rate for B factor when optimize_envelope is True. Default 0.1.
+    initial_phase_shift : float, optional
+        Initial phase shift in degrees when optimize_phase_shift is True.
+    optimize_phase_shift : bool
+        If True, also refine phase shift (clamped to phase_shift_range each step).
+    phase_shift_lr : float
+        Learning rate for phase shift. Default 1.0.
+    phase_shift_range : tuple[float, float]
+        (low, high) phase shift bounds in degrees. Default (0.0, 180.0).
 
     Returns
     -------
-    tuple[torch.Tensor, Optional[torch.Tensor]]
-        (refined_defocus, refined_B). refined_B is None when optimize_envelope is False.
+    tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]
+        (refined_defocus, refined_B, refined_phase_shift).
+        refined_phase_shift is None when optimize_phase_shift is False.
     """
     device = raps_in_fit_range.device
     dtype = raps_in_fit_range.dtype
@@ -343,6 +445,18 @@ def refine_defocus_and_b_factor_1d(
         param_list.append(b_param)
     else:
         b_param = None
+    if optimize_phase_shift and initial_phase_shift is not None:
+        # (u,v) representation: u = cos(2*theta), v = sin(2*theta);
+        # theta = 0.5*atan2(v,u), 0-180°
+        theta_rad = initial_phase_shift * (math.pi / 180.0)
+        u_param = torch.nn.Parameter(
+            torch.tensor(math.cos(2.0 * theta_rad), device=device, dtype=dtype)
+        )
+        v_param = torch.nn.Parameter(
+            torch.tensor(math.sin(2.0 * theta_rad), device=device, dtype=dtype)
+        )
+    else:
+        u_param = v_param = None
 
     optimiser = torch.optim.Adam(
         [
@@ -352,21 +466,34 @@ def refine_defocus_and_b_factor_1d(
                 if b_param is not None
                 else []
             ),
+            *(
+                [{"params": [u_param, v_param], "lr": phase_shift_lr}]
+                if u_param is not None and v_param is not None
+                else []
+            ),
         ]
     )
+
+    PHASE_SHIFT_UNIT_CIRCLE_PENALTY = 0.1
 
     h = image_sidelength
     for _ in range(n_iterations):
         optimiser.zero_grad()
         with torch.no_grad():
             defocus_param.clamp_(min=defocus_low, max=defocus_high)
+        if u_param is not None and v_param is not None:
+            phase_val = torch.remainder(
+                0.5 * torch.atan2(v_param, u_param) * (180.0 / math.pi), 180.0
+            )
+        else:
+            phase_val = 0.0
         ctf2 = (
             calculate_ctf_1d(
                 defocus=defocus_param.unsqueeze(0),
                 voltage=voltage_kev,
                 spherical_aberration=spherical_aberration_mm,
                 amplitude_contrast=amplitude_contrast,
-                phase_shift=0,
+                phase_shift=phase_val if (u_param is not None) else 0,
                 pixel_size=pixel_spacing_angstroms,
                 n_samples=h // 2 + 1,
                 oversampling_factor=3,
@@ -382,6 +509,9 @@ def refine_defocus_and_b_factor_1d(
         model_fit = model_fit / torch.linalg.norm(model_fit)
         zncc = einops.einsum(model_fit, normalised_raps, "i, i ->")
         loss = -zncc
+        if u_param is not None and v_param is not None:
+            penalty = (u_param**2 + v_param**2 - 1.0) ** 2
+            loss = loss + PHASE_SHIFT_UNIT_CIRCLE_PENALTY * penalty
         loss.backward()
         optimiser.step()
 
@@ -389,7 +519,15 @@ def refine_defocus_and_b_factor_1d(
         defocus_param.clamp_(min=defocus_low, max=defocus_high)
     refined_defocus = defocus_param.detach()
     refined_B = b_param.detach() if b_param is not None else None
-    return refined_defocus, refined_B
+    if u_param is not None and v_param is not None:
+        raw_deg = 0.5 * math.degrees(
+            math.atan2(v_param.detach().cpu().item(), u_param.detach().cpu().item())
+        )
+        refined_phase_shift = raw_deg % 180.0
+        refined_phase_shift = min(refined_phase_shift, 180.0 - refined_phase_shift)
+    else:
+        refined_phase_shift = None
+    return refined_defocus, refined_B, refined_phase_shift
 
 
 def estimate_defocus_1d(
@@ -409,6 +547,11 @@ def estimate_defocus_1d(
     refine_b_factor_lr: float = 1.0,
     initial_defocus: Optional[float] = None,
     background_result: Optional["_Background1DResult"] = None,
+    optimize_phase_shift: bool = False,
+    initial_phase_shift: float = 0.0,
+    phase_shift_range: tuple[float, float] = (0.0, 180.0),
+    phase_shift_step: float = 5.0,
+    phase_shift_lr: float = 5.0,
 ) -> Defocus1DResults:
     """
     Estimate defocus in 1D from a power spectrum.
@@ -457,6 +600,16 @@ def estimate_defocus_1d(
         If provided together with initial_defocus, skip the background fit and use
         this pre-fitted background to subtract from the rotationally averaged
         spectrum (e.g. reuse background from mean spectrum for all patches).
+    optimize_phase_shift : bool
+        If True, grid search and refine phase shift (0-180°). Default False.
+    initial_phase_shift : float
+        Initial phase shift in degrees when optimize_phase_shift is True. Default 0.0.
+    phase_shift_range : tuple[float, float]
+        (low, high) phase shift bounds in degrees. Default (0.0, 180.0).
+    phase_shift_step : float
+        Phase shift grid step in degrees for grid search. Default 5.0.
+    phase_shift_lr : float
+        Learning rate for phase shift in refinement. Default 1.0.
 
     Returns
     -------
@@ -512,22 +665,35 @@ def estimate_defocus_1d(
 
     if initial_defocus is not None:
         # Refinement only: use given initial (e.g. from 2D fit), no grid search
-        refined_defocus, refined_B = refine_defocus_and_b_factor_1d(
-            initial_defocus=initial_defocus,
-            initial_B=None,
-            raps_in_fit_range=bg_result.raps_in_fit_range,
-            spatial_freqs=bg_result.spatial_freqs,
-            fit_mask=bg_result.fit_mask,
-            image_sidelength=image_sidelength,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast=amplitude_contrast,
-            pixel_spacing_angstroms=pixel_spacing_angstroms,
-            defocus_range_microns=defocus_range_microns,
-            optimize_envelope=False,
-            n_iterations=refine_steps,
-            defocus_lr=refine_defocus_lr,
-            b_factor_lr=refine_b_factor_lr,
+        refined_defocus, refined_B, refined_phase_shift = (
+            refine_defocus_and_b_factor_1d(
+                initial_defocus=initial_defocus,
+                initial_B=None,
+                raps_in_fit_range=bg_result.raps_in_fit_range,
+                spatial_freqs=bg_result.spatial_freqs,
+                fit_mask=bg_result.fit_mask,
+                image_sidelength=image_sidelength,
+                voltage_kev=voltage_kev,
+                spherical_aberration_mm=spherical_aberration_mm,
+                amplitude_contrast=amplitude_contrast,
+                pixel_spacing_angstroms=pixel_spacing_angstroms,
+                defocus_range_microns=defocus_range_microns,
+                optimize_envelope=False,
+                n_iterations=refine_steps,
+                defocus_lr=refine_defocus_lr,
+                b_factor_lr=refine_b_factor_lr,
+                initial_phase_shift=initial_phase_shift
+                if optimize_phase_shift
+                else None,
+                optimize_phase_shift=optimize_phase_shift,
+                phase_shift_lr=phase_shift_lr,
+                phase_shift_range=phase_shift_range,
+            )
+        )
+        phase_deg = (
+            float(refined_phase_shift.cpu().item())
+            if refined_phase_shift is not None
+            else 0.0
         )
         return Defocus1DResults(
             frequencies_1d=fftfreq_to_spatial_frequency(
@@ -546,7 +712,7 @@ def estimate_defocus_1d(
                 amplitude_contrast_fraction=torch.as_tensor(
                     amplitude_contrast, dtype=torch.float32
                 ),
-                phase_shift_degrees=torch.as_tensor(0.0, dtype=torch.float32),
+                phase_shift_degrees=torch.as_tensor(phase_deg, dtype=torch.float32),
                 envelope_B=None,
             ),
             low_frequency_fit=1 / low_ang,
@@ -569,33 +735,55 @@ def estimate_defocus_1d(
         optimize_envelope=optimize_envelope,
         b_range=b_range,
         b_step=b_step,
+        optimize_phase_shift=optimize_phase_shift,
+        phase_shift_step=phase_shift_step,
     )
 
     if refine_steps > 0:
         initial_B_float: Optional[float] = None
         if grid_result.best_B is not None:
             initial_B_float = float(grid_result.best_B.detach().cpu().item())
-        refined_defocus, refined_B = refine_defocus_and_b_factor_1d(
-            initial_defocus=float(grid_result.best_defocus.detach().cpu().item()),
-            initial_B=initial_B_float,
-            raps_in_fit_range=bg_result.raps_in_fit_range,
-            spatial_freqs=bg_result.spatial_freqs,
-            fit_mask=bg_result.fit_mask,
-            image_sidelength=image_sidelength,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast=amplitude_contrast,
-            pixel_spacing_angstroms=pixel_spacing_angstroms,
-            defocus_range_microns=defocus_range_microns,
-            optimize_envelope=optimize_envelope,
-            n_iterations=refine_steps,
-            defocus_lr=refine_defocus_lr,
-            b_factor_lr=refine_b_factor_lr,
+        initial_phase_float: Optional[float] = None
+        if grid_result.best_phase_shift is not None:
+            initial_phase_float = float(
+                grid_result.best_phase_shift.detach().cpu().item()
+            )
+        refined_defocus, refined_B, refined_phase_shift = (
+            refine_defocus_and_b_factor_1d(
+                initial_defocus=float(grid_result.best_defocus.detach().cpu().item()),
+                initial_B=initial_B_float,
+                raps_in_fit_range=bg_result.raps_in_fit_range,
+                spatial_freqs=bg_result.spatial_freqs,
+                fit_mask=bg_result.fit_mask,
+                image_sidelength=image_sidelength,
+                voltage_kev=voltage_kev,
+                spherical_aberration_mm=spherical_aberration_mm,
+                amplitude_contrast=amplitude_contrast,
+                pixel_spacing_angstroms=pixel_spacing_angstroms,
+                defocus_range_microns=defocus_range_microns,
+                optimize_envelope=optimize_envelope,
+                n_iterations=refine_steps,
+                defocus_lr=refine_defocus_lr,
+                b_factor_lr=refine_b_factor_lr,
+                initial_phase_shift=initial_phase_float,
+                optimize_phase_shift=optimize_phase_shift,
+                phase_shift_lr=phase_shift_lr,
+                phase_shift_range=phase_shift_range,
+            )
         )
     else:
         refined_defocus = grid_result.best_defocus
         refined_B = grid_result.best_B
+        refined_phase_shift = grid_result.best_phase_shift
 
+    if refined_phase_shift is None:
+        phase_deg = 0.0
+    elif isinstance(refined_phase_shift, torch.Tensor):
+        phase_deg = float(refined_phase_shift.cpu().item())
+    else:
+        phase_deg = float(refined_phase_shift)
+    # Fold to [0, 90]: symmetry theta <-> 180 - theta
+    phase_deg = min(phase_deg, 180.0 - phase_deg)
     return Defocus1DResults(
         frequencies_1d=fftfreq_to_spatial_frequency(
             bg_result.freqs, pixel_spacing_angstroms
@@ -613,7 +801,7 @@ def estimate_defocus_1d(
             amplitude_contrast_fraction=torch.as_tensor(
                 amplitude_contrast, dtype=torch.float32
             ),
-            phase_shift_degrees=torch.as_tensor(0.0, dtype=torch.float32),
+            phase_shift_degrees=torch.as_tensor(phase_deg, dtype=torch.float32),
             envelope_B=None
             if refined_B is None
             else torch.as_tensor(float(refined_B.cpu().item()), dtype=torch.float32),

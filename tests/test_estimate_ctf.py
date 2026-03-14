@@ -265,3 +265,123 @@ def test_estimate_ctf_linear_fix_defocus_0_2d_zncc():
     assert result2d.defocus_model.defocus_0 is not None
     assert result2d.defocus_u is not None
     assert result2d.defocus_v is not None
+
+
+def test_estimate_ctf_phase_shift_default_zero():
+    """Test that without optimize_phase_shift, phase_shift_degrees is 0."""
+    image = torch.randn(512, 512)
+    _mean_ps, result1d, result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 2, 2),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 3.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        device="cpu",
+    )
+    phase_1d = result1d.ctf_model.phase_shift_degrees
+    assert phase_1d is not None
+    if isinstance(phase_1d, torch.Tensor):
+        assert float(phase_1d.cpu().item()) == 0.0
+    else:
+        assert phase_1d == 0.0
+    assert result2d.phase_shift_degrees is None or result2d.phase_shift_degrees == 0.0
+
+
+def test_estimate_ctf_optimize_phase_shift_1d():
+    """Test 1D with optimize_phase_shift=True; phase in [0, 90] (folded from 0-180)."""
+    image = torch.randn(512, 512)
+    _mean_ps, result1d, _result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 1, 1),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 3.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        optimize_phase_shift=True,
+        device="cpu",
+    )
+    phase = result1d.ctf_model.phase_shift_degrees
+    assert phase is not None
+    p = float(phase.cpu().item()) if isinstance(phase, torch.Tensor) else float(phase)
+    assert 0.0 <= p <= 90.0
+
+
+def test_estimate_ctf_optimize_phase_shift_2d_grid():
+    """Test 2D with optimize_phase_shift=True and phase_shift_model='grid'."""
+    image = torch.randn(512, 512)
+    _mean_ps, _, result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 2, 2),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 3.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        optimize_phase_shift=True,
+        phase_shift_model="grid",
+        device="cpu",
+    )
+    assert result2d.phase_shift_degrees is not None
+    assert 0.0 <= result2d.phase_shift_degrees <= 90.0
+    assert result2d.phase_shift_model_type == "grid"
+    assert result2d.phase_shift_model is not None
+    # Grid model is (u_grid, v_grid) tuple for (u,v) representation
+    assert isinstance(result2d.phase_shift_model, tuple)
+    assert len(result2d.phase_shift_model) == 2
+
+
+def test_estimate_ctf_optimize_phase_shift_2d_quadratic():
+    """Test 2D with optimize_phase_shift=True and phase_shift_model='quadratic'."""
+    image = torch.randn(512, 512)
+    _mean_ps, _, result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 2, 2),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 3.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        optimize_phase_shift=True,
+        phase_shift_model="quadratic",
+        device="cpu",
+    )
+    assert result2d.phase_shift_degrees is not None
+    assert 0.0 <= result2d.phase_shift_degrees <= 90.0
+    assert result2d.phase_shift_model_type == "quadratic"
+    assert result2d.phase_shift_model is not None
+    # Directional quadratic: 4 params C, g, k, alpha_rad
+    assert hasattr(result2d.phase_shift_model, "C")
+    assert hasattr(result2d.phase_shift_model, "g")
+    assert hasattr(result2d.phase_shift_model, "k")
+    assert hasattr(result2d.phase_shift_model, "alpha_rad")
+
+
+def test_estimate_ctf_raises_when_rescaled_image_smaller_than_patch():
+    """estimate_ctf raises ValueError when rescaled image < patch_sidelength."""
+    image = torch.randn(256, 256)
+    with pytest.raises(
+        ValueError, match=r"Rescaled image size.*smaller than patch_sidelength"
+    ):
+        estimate_ctf(
+            image=image,
+            pixel_spacing_angstroms=1.0,
+            defocus_grid_resolution=(1, 2, 2),
+            frequency_fit_range_angstroms=(30.0, 5.0),
+            defocus_range_microns=(0.5, 3.0),
+            voltage_kev=300.0,
+            spherical_aberration_mm=2.7,
+            amplitude_contrast_fraction=0.1,
+            patch_sidelength=128,
+            device="cpu",
+        )

@@ -79,6 +79,21 @@ class LinearDefocusModel(BaseModel):
         return handler(value)
 
 
+class QuadraticPhaseShiftModel(BaseModel):
+    """
+    Directional quadratic phase shift: f(x,y) = C + g*s + k*s^2.
+
+    s = x*cos(alpha) + y*sin(alpha). (x,y) in [-1,1]. 4 parameters: C, g, k, alpha_rad.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    C: float  # mean phase shift (degrees)
+    g: float  # linear slope along direction
+    k: float  # curvature along direction
+    alpha_rad: float  # orientation of variation (radians); u = (cos(alpha), sin(alpha))
+
+
 class Defocus1DResults(BaseModel):
     """Results from 1D defocus estimation."""
 

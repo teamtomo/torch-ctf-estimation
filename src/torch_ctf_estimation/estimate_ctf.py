@@ -32,7 +32,11 @@ def _estimate_defocus_2d_at_1x1(
     pixel_spacing_angstroms: float,
     optimize_astigmatism: bool = False,
     initial_envelope_B: float = 0.0,
+    n_iterations: int = 100,
     debug: bool = False,
+    optimize_phase_shift: bool = False,
+    phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    initial_phase_shift: float = 0.0,
 ) -> Defocus2DResults:
     """
     Run 2D defocus estimation at 1x1 spatial resolution (center only).
@@ -54,8 +58,16 @@ def _estimate_defocus_2d_at_1x1(
         Whether to optimize astigmatism in the 2D fit.
     initial_envelope_B : float
         Initial B-factor for envelope.
+    n_iterations : int, optional
+        Number of optimizer steps for 2D fit. Default 100.
     debug : bool
         If True, return debug info from 2D fit.
+    optimize_phase_shift : bool, optional
+        Whether to estimate phase shift in the 2D fit. Default False.
+    phase_shift_model : {"grid", "quadratic"}, optional
+        Phase shift model passed to estimate_defocus_2d. Default "grid".
+    initial_phase_shift : float, optional
+        Initial phase shift in degrees when optimizing. Default 0.0.
 
     Returns
     -------
@@ -91,8 +103,12 @@ def _estimate_defocus_2d_at_1x1(
         initial_astigmatism_angle=0.0,
         optimize_astigmatism=optimize_astigmatism,
         initial_envelope_B=initial_envelope_B,
+        n_iterations=n_iterations,
         defocus_model="grid",
         debug=debug,
+        optimize_phase_shift=optimize_phase_shift,
+        phase_shift_model=phase_shift_model,
+        initial_phase_shift=initial_phase_shift,
     )
 
 
@@ -116,6 +132,7 @@ def _defocus_field_from_1d_fits(
     refine_steps_1d: int,
     background_result: Optional[Any],
     device: torch.device,
+    optimize_phase_shift: bool = False,
 ) -> Defocus2DResults:
     """
     Build defocus field from per-patch 1D fits; fit grid or linear to those values.
@@ -127,6 +144,9 @@ def _defocus_field_from_1d_fits(
     t, gh, gw, _ph, _pw = patch_power_spectra.shape
     nt, nh, nw = defocus_grid_resolution
     defocus_2d_center = float(result_1x1.defocus_model.data.mean().cpu().item())
+    initial_phase_from_1x1 = 0.0
+    if result_1x1.phase_shift_degrees is not None:
+        initial_phase_from_1x1 = result_1x1.phase_shift_degrees
     defocus_list = []
     for ti in range(t):
         for gi in range(gh):
@@ -147,6 +167,8 @@ def _defocus_field_from_1d_fits(
                     refine_steps=refine_steps_1d,
                     initial_defocus=defocus_2d_center,
                     background_result=background_result,
+                    optimize_phase_shift=optimize_phase_shift,
+                    initial_phase_shift=initial_phase_from_1x1,
                 )
                 d = r1d.ctf_model.defocus_um
                 if isinstance(d, torch.Tensor):
@@ -263,10 +285,14 @@ def estimate_ctf(
     use_1d_defocus_for_spatial: bool = False,
     linear_fix_defocus_0_from_1x1: bool = False,
     refine_steps_1d: int = 40,
+    n_iterations_2d: int = 100,
     optimize_envelope_1d: bool = True,
     b_range_1d: tuple[float, float] = (0.0, 100.0),
     b_step_1d: float = 1.0,
     initial_envelope_B: Optional[float] = None,
+    optimize_phase_shift: bool = False,
+    phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    initial_phase_shift: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Estimate CTF from a 2D or 3D image.
@@ -317,6 +343,9 @@ def estimate_ctf(
     refine_steps_1d: int, optional
         Number of gradient-descent refinement steps for 1D defocus (mean and
         per-patch when use_1d_defocus_for_spatial). Default 40.
+    n_iterations_2d: int, optional
+        Number of optimizer steps for 2D defocus (grid or linear) estimation.
+        Default 100.
     optimize_envelope_1d: bool
         Whether to optimize the envelope in 1D.
     b_range_1d: tuple[float, float]
@@ -325,6 +354,13 @@ def estimate_ctf(
         Step size for envelope optimization in 1D.
     initial_envelope_B: Optional[float]
         Initial B-factor for envelope optimization in 2D.
+    optimize_phase_shift: bool, optional
+        Whether to estimate phase shift (0-180°) alongside defocus. Default False.
+    phase_shift_model: {"grid", "quadratic"}, optional
+        For 2D: "grid" (per-patch phase shift) or "quadratic" (spatial quadratic).
+        Used only when optimize_phase_shift is True. Default "grid".
+    initial_phase_shift: float, optional
+        Initial phase shift in degrees when optimizing. Default 0.0.
 
     Returns
     -------
@@ -345,8 +381,6 @@ def estimate_ctf(
 
     # normalize images to mean 0 std 1
     image = normalize_image(image)
-    # cuton, cutoff = frequency_fit_range_angstroms
-    # target_spacing = 0.5 * cutoff
     new_spacing = max(3.0, pixel_spacing_angstroms)
     image, _ = fourier_rescale_2d(
         image=image, source_spacing=pixel_spacing_angstroms, target_spacing=new_spacing
@@ -354,6 +388,14 @@ def estimate_ctf(
     t, h, w = image.shape
 
     use_whole_image = patch_sidelength < 0
+    if not use_whole_image and (h < patch_sidelength or w < patch_sidelength):
+        raise ValueError(
+            f"Rescaled image size ({h}, {w}) is smaller than patch_sidelength "
+            f"({patch_sidelength}). Use a larger image, a smaller patch_sidelength, "
+            "or less aggressive rescaling (e.g. pixel_spacing_angstroms closer to "
+            "the internal target spacing)."
+        )
+
     if use_whole_image:
         print("Using whole-image mode")
         nt, nh, nw = defocus_grid_resolution
@@ -414,12 +456,20 @@ def estimate_ctf(
         b_step=b_step_1d,
         refine_steps=refine_steps_1d,
         background_result=bg_mean,
+        optimize_phase_shift=optimize_phase_shift,
+        initial_phase_shift=initial_phase_shift,
     )
 
     # estimate 2D background and subtract prior to 2D defocus estimation
+    # Use actual (h, w) in whole-image mode so background shape matches mean_ps
+    image_shape_2d = (
+        (h, w)
+        if use_whole_image
+        else (image_sidelength_for_1d, image_sidelength_for_1d)
+    )
     background_2d = estimate_background_2d(
         power_spectrum=mean_ps,
-        image_sidelength=image_sidelength_for_1d,
+        image_sidelength=image_shape_2d,
     )
     patch_ps -= background_2d
 
@@ -447,6 +497,13 @@ def estimate_ctf(
     else:
         initial_defocus_2d = float(initial_defocus_2d)
 
+    initial_phase_shift_2d = initial_phase_shift
+    if optimize_phase_shift and result1d.ctf_model.phase_shift_degrees is not None:
+        p = result1d.ctf_model.phase_shift_degrees
+        initial_phase_shift_2d = (
+            float(p.cpu().item()) if isinstance(p, torch.Tensor) else float(p)
+        )
+
     if use_1d_spatial:
         result_1x1 = _estimate_defocus_2d_at_1x1(
             patch_power_spectra=patch_ps,
@@ -456,7 +513,11 @@ def estimate_ctf(
             pixel_spacing_angstroms=new_spacing,
             optimize_astigmatism=optimize_astigmatism,
             initial_envelope_B=initial_envelope_B_2d,
+            n_iterations=n_iterations_2d,
             debug=debug,
+            optimize_phase_shift=optimize_phase_shift,
+            phase_shift_model=phase_shift_model,
+            initial_phase_shift=initial_phase_shift_2d,
         )
         result2d = _defocus_field_from_1d_fits(
             patch_power_spectra=patch_ps,
@@ -478,6 +539,7 @@ def estimate_ctf(
             refine_steps_1d=refine_steps_1d,
             background_result=bg_mean,
             device=patch_ps.device,
+            optimize_phase_shift=optimize_phase_shift,
         )
         if result2d.defocus_model_type == "linear":
             axis_deg, tilt_deg = linear_tilt_axis_and_magnitude_deg(
@@ -489,11 +551,21 @@ def estimate_ctf(
                     "tilt_magnitude_deg": tilt_deg,
                 }
             )
+        if optimize_phase_shift and result_1x1.phase_shift_degrees is not None:
+            result2d = result2d.model_copy(
+                update={
+                    "phase_shift_degrees": result_1x1.phase_shift_degrees,
+                    "phase_shift_model_type": result_1x1.phase_shift_model_type,
+                    "phase_shift_model": result_1x1.phase_shift_model,
+                    "phase_shift_trace": result_1x1.phase_shift_trace,
+                }
+            )
         return mean_ps, result1d, result2d
 
     fix_defocus_0_val = None
     initial_astigmatism_2d = 0.0
     initial_astigmatism_angle_2d = 0.0
+    initial_phase_shift_for_2d = initial_phase_shift_2d
     if defocus_model == "linear" and linear_fix_defocus_0_from_1x1:
         result_1x1 = _estimate_defocus_2d_at_1x1(
             patch_power_spectra=patch_ps,
@@ -503,13 +575,19 @@ def estimate_ctf(
             pixel_spacing_angstroms=new_spacing,
             optimize_astigmatism=optimize_astigmatism,
             initial_envelope_B=initial_envelope_B_2d,
+            n_iterations=n_iterations_2d,
             debug=debug,
+            optimize_phase_shift=optimize_phase_shift,
+            phase_shift_model=phase_shift_model,
+            initial_phase_shift=initial_phase_shift_2d,
         )
         fix_defocus_0_val = float(result_1x1.defocus_model.data.mean().cpu().item())
         if result_1x1.astigmatism is not None:
             initial_astigmatism_2d = result_1x1.astigmatism
         if result_1x1.astigmatism_angle is not None:
             initial_astigmatism_angle_2d = result_1x1.astigmatism_angle
+        if optimize_phase_shift and result_1x1.phase_shift_degrees is not None:
+            initial_phase_shift_for_2d = result_1x1.phase_shift_degrees
 
     result2d = estimate_defocus_2d(
         patch_power_spectra=patch_ps,
@@ -525,6 +603,10 @@ def estimate_ctf(
         initial_astigmatism=initial_astigmatism_2d,
         initial_astigmatism_angle=initial_astigmatism_angle_2d,
         fix_defocus_0=fix_defocus_0_val,
+        n_iterations=n_iterations_2d,
+        optimize_phase_shift=optimize_phase_shift,
+        phase_shift_model=phase_shift_model,
+        initial_phase_shift=initial_phase_shift_for_2d,
     )
     if result2d.defocus_model_type == "linear":
         axis_deg, tilt_deg = linear_tilt_axis_and_magnitude_deg(
