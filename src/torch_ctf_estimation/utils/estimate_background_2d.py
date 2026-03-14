@@ -23,6 +23,7 @@ def estimate_background_2d(
     bg_estimate_2d: torch.Tensor
         Background estimate in 2D.
     """
+    device = power_spectrum.device
     raps_2d, _ = rotational_average_dft_2d(
         dft=power_spectrum,
         image_shape=(image_sidelength, image_sidelength),
@@ -30,6 +31,7 @@ def estimate_background_2d(
         fftshifted=False,
         return_1d_average=False,
     )
+    raps_2d = raps_2d.to(device)
     raps_2d[0, 0] = 0
     raps_2d = einops.rearrange(raps_2d, "h w -> 1 1 h w")
 

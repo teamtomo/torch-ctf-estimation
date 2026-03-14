@@ -1,7 +1,7 @@
 """Plotting utilities for CTF estimation."""
 
 import torch
-from torch_fourier_filter.ctf import calculate_total_phase_shift
+from torch_ctf import calculate_total_phase_shift
 
 from torch_ctf_estimation.estimate_defocus_1d import Defocus1DResults
 
@@ -41,8 +41,9 @@ def plot_1d_spectrum(results1d: Defocus1DResults) -> None:
         )
         fit_freqs = freqs[fit_mask]
 
-        # Evaluate background model
-        x = torch.linspace(0, 1, steps=len(fit_freqs))
+        # Evaluate background model (use same device as model to avoid device mismatch)
+        device = next(results1d.background_model.parameters()).device
+        x = torch.linspace(0, 1, steps=len(fit_freqs), device=device)
         background = (
             torch.exp(results1d.background_model(x).squeeze()).detach().cpu().numpy()
         )
@@ -107,8 +108,9 @@ def plot_1d_spectrum(results1d: Defocus1DResults) -> None:
         fit_freqs = freqs[fit_mask]
         fit_power = power_spec[fit_mask]
 
-        # Subtract background
-        x = torch.linspace(0, 1, steps=len(fit_freqs))
+        # Subtract background (use same device as model to avoid device mismatch)
+        device = next(results1d.background_model.parameters()).device
+        x = torch.linspace(0, 1, steps=len(fit_freqs), device=device)
         background = (
             torch.exp(results1d.background_model(x).squeeze()).detach().cpu().numpy()
         )
@@ -131,11 +133,17 @@ def plot_1d_spectrum(results1d: Defocus1DResults) -> None:
 
         # Plot simulated CTF^2
         if results1d.ctf_model is not None:
+            # Use same device as CTF model to avoid device mismatch in torch_ctf
+            ctf_device = results1d.ctf_model.defocus_um.device
+            ctf_dtype = results1d.ctf_model.defocus_um.dtype
+            fftfreq_sq = torch.as_tensor(
+                fit_freqs**2, device=ctf_device, dtype=ctf_dtype
+            )
             simulated_ctf2 = (
                 torch.sin(
                     calculate_total_phase_shift(
                         defocus_um=results1d.ctf_model.defocus_um,
-                        fftfreq_grid_angstrom_squared=fit_freqs**2,
+                        fftfreq_grid_angstrom_squared=fftfreq_sq,
                         voltage_kv=results1d.ctf_model.voltage_kev,
                         spherical_aberration_mm=results1d.ctf_model.spherical_aberration_mm,
                         amplitude_contrast_fraction=results1d.ctf_model.amplitude_contrast_fraction,
@@ -147,7 +155,7 @@ def plot_1d_spectrum(results1d: Defocus1DResults) -> None:
 
             ax3.plot(
                 fit_freqs,
-                simulated_ctf2,
+                simulated_ctf2.detach().cpu().numpy(),
                 "orange",
                 linestyle="--",
                 label="Simulated CTF^2",

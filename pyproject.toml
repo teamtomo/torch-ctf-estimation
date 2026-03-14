@@ -137,7 +137,12 @@ pretty = true
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    "ignore:CUDA initialization:UserWarning",
+    "ignore:Linear defocus gradient from 1D fits:UserWarning",
+    "ignore:Linear defocus gradient angle was NaN:UserWarning",
+]
 
 # https://coverage.readthedocs.io/
 [tool.coverage.report]
