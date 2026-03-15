@@ -1,429 +1,110 @@
 """Estimate CTF from a 2D or 3D image."""
 
-import math as _math
-import warnings
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 import einops
 import torch
-from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 from torch_fourier_rescale import fourier_rescale_2d
 from torch_grid_utils.patch_grid import patch_grid
 
-from torch_ctf_estimation.estimate_defocus_1d import (
-    estimate_defocus_1d,
+from torch_ctf_estimation.estimate_ctf_1d import (
+    estimate_ctf_1d,
     fit_background_spline_1d,
 )
-from torch_ctf_estimation.estimate_defocus_2d import (
+from torch_ctf_estimation.estimate_ctf_2d import estimate_ctf_2d
+from torch_ctf_estimation.estimate_ctf_2d.estimate_background_2d import (
+    estimate_background_2d,
+)
+from torch_ctf_estimation.estimate_ctf_2d.estimate_ctf_2d_utils import (
+    _estimate_defocus_2d_at_1x1,
+)
+from torch_ctf_estimation.models import (
+    CTFFittingParams,
+    Defocus1DResults,
     Defocus2DResults,
-    estimate_defocus_2d,
+    LaserParams,
+    OpticalParams,
     linear_tilt_axis_and_magnitude_deg,
 )
-from torch_ctf_estimation.models import LaserParams, LinearDefocusModel
 from torch_ctf_estimation.utils.data_io import write_results_json
-from torch_ctf_estimation.utils.estimate_background_2d import estimate_background_2d
+from torch_ctf_estimation.utils.defocus_field_from_1d import (
+    _defocus_field_from_1d_fits,
+)
 from torch_ctf_estimation.utils.normalize import normalize_image
-
-
-def _estimate_defocus_2d_at_1x1(
-    patch_power_spectra: torch.Tensor,
-    defocus_grid_resolution: tuple[int, int, int],
-    frequency_fit_range_angstroms: tuple[float, float],
-    initial_defocus: float,
-    pixel_spacing_angstroms: float,
-    optimize_astigmatism: bool = False,
-    initial_envelope_B: float = 0.0,
-    n_iterations: int = 100,
-    debug: bool = False,
-    optimize_phase_shift: bool = False,
-    phase_shift_model: Literal["grid", "quadratic"] = "grid",
-    initial_phase_shift: float = 0.0,
-    voltage_kev: float = 300.0,
-    spherical_aberration_mm: float = 2.7,
-    amplitude_contrast_fraction: float = 0.07,
-    laser_params: Optional[LaserParams] = None,
-) -> Defocus2DResults:
-    """
-    Run 2D defocus estimation at 1x1 spatial resolution (center only).
-
-    Averages patch power spectra over the spatial grid (gh, gw), builds
-    single center positions per frame, and calls estimate_defocus_2d with
-    defocus_grid_resolution=(nt, 1, 1) and grid model to get astigmatism
-    and center defocus.
-
-    Parameters
-    ----------
-    patch_power_spectra : torch.Tensor
-        Shape (t, gh, gw, ph, pw).
-    defocus_grid_resolution : tuple[int, int, int]
-        (nt, nh, nw); nt is used for the time dimension.
-    frequency_fit_range_angstroms, initial_defocus, pixel_spacing_angstroms :
-        Passed through to estimate_defocus_2d.
-    optimize_astigmatism : bool
-        Whether to optimize astigmatism in the 2D fit.
-    initial_envelope_B : float
-        Initial B-factor for envelope.
-    n_iterations : int, optional
-        Number of optimizer steps for 2D fit. Default 100.
-    debug : bool
-        If True, return debug info from 2D fit.
-    optimize_phase_shift : bool, optional
-        Whether to estimate phase shift in the 2D fit. Default False.
-    phase_shift_model : {"grid", "quadratic"}, optional
-        Phase shift model passed to estimate_defocus_2d. Default "grid".
-    initial_phase_shift : float, optional
-        Initial phase shift in degrees when optimizing. Default 0.0.
-    voltage_kev : float, optional
-        Acceleration voltage in keV for CTF simulation. Default 300.0.
-    spherical_aberration_mm : float, optional
-        Spherical aberration in mm for CTF simulation. Default 2.7.
-    amplitude_contrast_fraction : float, optional
-        Amplitude contrast fraction (0-1) for CTF simulation. Default 0.07.
-    laser_params : Optional[LaserParams], optional
-        If set, use LPP CTF model for 2D fit; if None, use standard CTF. Default None.
-
-    Returns
-    -------
-    Defocus2DResults
-        Result from 2D fit at 1x1 (defocus, astigmatism, envelope_B, etc.).
-    """
-    t, _gh, _gw, _ph, _pw = patch_power_spectra.shape
-    nt = defocus_grid_resolution[0]
-    device = patch_power_spectra.device
-    # Mean over spatial patch grid -> (t, ph, pw)
-    patch_ps_mean = patch_power_spectra.mean(dim=(1, 2))
-    # (t, 1, 1, ph, pw)
-    patch_ps_1x1 = patch_ps_mean.unsqueeze(1).unsqueeze(1)
-    # Positions: (t, 1, 1, 3) with [t_norm, 0.5, 0.5]
-    if t == 1:
-        t_vals = torch.tensor([0.5], device=device, dtype=patch_power_spectra.dtype)
-    else:
-        t_vals = torch.linspace(0, 1, t, device=device, dtype=patch_power_spectra.dtype)
-    positions_1x1 = torch.zeros(
-        t, 1, 1, 3, device=device, dtype=patch_power_spectra.dtype
-    )
-    positions_1x1[:, 0, 0, 0] = t_vals
-    positions_1x1[:, 0, 0, 1] = 0.5
-    positions_1x1[:, 0, 0, 2] = 0.5
-    return estimate_defocus_2d(
-        patch_power_spectra=patch_ps_1x1,
-        normalised_patch_positions=positions_1x1,
-        defocus_grid_resolution=(nt, 1, 1),
-        frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-        initial_defocus=initial_defocus,
-        pixel_spacing_angstroms=pixel_spacing_angstroms,
-        initial_astigmatism=0.0,
-        initial_astigmatism_angle=0.0,
-        optimize_astigmatism=optimize_astigmatism,
-        initial_envelope_B=initial_envelope_B,
-        n_iterations=n_iterations,
-        defocus_model="grid",
-        debug=debug,
-        optimize_phase_shift=optimize_phase_shift,
-        phase_shift_model=phase_shift_model,
-        initial_phase_shift=initial_phase_shift,
-        voltage_kev=voltage_kev,
-        spherical_aberration_mm=spherical_aberration_mm,
-        amplitude_contrast_fraction=amplitude_contrast_fraction,
-        laser_params=laser_params,
-    )
-
-
-def _defocus_field_from_1d_fits(
-    patch_power_spectra: torch.Tensor,
-    normalised_patch_positions: torch.Tensor,
-    result_1x1: Defocus2DResults,
-    defocus_model: Literal["grid", "linear"],
-    defocus_grid_resolution: tuple[int, int, int],
-    initial_defocus: float,
-    image_sidelength: int,
-    frequency_fit_range_angstroms: tuple[float, float],
-    defocus_range_microns: tuple[float, float],
-    voltage_kev: float,
-    spherical_aberration_mm: float,
-    amplitude_contrast_fraction: float,
-    pixel_spacing_angstroms: float,
-    optimize_envelope_1d: bool,
-    b_range_1d: tuple[float, float],
-    b_step_1d: float,
-    refine_steps_1d: int,
-    background_result: Optional[Any],
-    device: torch.device,
-    optimize_phase_shift: bool = False,
-) -> Defocus2DResults:
-    """
-    Build defocus field from per-patch 1D fits; fit grid or linear to those values.
-
-    Runs estimate_defocus_1d on each patch, then fits either a 3D spline grid or
-    a linear (defocus_0 + gradient) model to the (position, defocus_1d) data.
-    Astigmatism and envelope come from result_1x1.
-    """
-    t, gh, gw, _ph, _pw = patch_power_spectra.shape
-    nt, nh, nw = defocus_grid_resolution
-    defocus_2d_center = float(result_1x1.defocus_model.data.mean().cpu().item())
-    initial_phase_from_1x1 = 0.0
-    if result_1x1.phase_shift_degrees is not None:
-        initial_phase_from_1x1 = result_1x1.phase_shift_degrees
-    defocus_list = []
-    for ti in range(t):
-        for gi in range(gh):
-            for gj in range(gw):
-                ps = patch_power_spectra[ti, gi, gj]
-                r1d = estimate_defocus_1d(
-                    power_spectrum=ps,
-                    image_sidelength=image_sidelength,
-                    frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-                    defocus_range_microns=defocus_range_microns,
-                    voltage_kev=voltage_kev,
-                    spherical_aberration_mm=spherical_aberration_mm,
-                    amplitude_contrast=amplitude_contrast_fraction,
-                    pixel_spacing_angstroms=pixel_spacing_angstroms,
-                    optimize_envelope=optimize_envelope_1d,
-                    b_range=b_range_1d,
-                    b_step=b_step_1d,
-                    refine_steps=refine_steps_1d,
-                    initial_defocus=defocus_2d_center,
-                    background_result=background_result,
-                    optimize_phase_shift=optimize_phase_shift,
-                    initial_phase_shift=initial_phase_from_1x1,
-                )
-                d = r1d.ctf_model.defocus_um
-                if isinstance(d, torch.Tensor):
-                    d = float(d.cpu().item())
-                else:
-                    d = float(d)
-                defocus_list.append(d)
-    defocus_vals = torch.tensor(
-        defocus_list, device=device, dtype=patch_power_spectra.dtype
-    ).view(t, gh, gw)
-    positions_flat = normalised_patch_positions.reshape(-1, 3)
-    defocus_flat = defocus_vals.reshape(-1, 1)
-
-    astig = result_1x1.astigmatism or 0.0
-    env_b = result_1x1.envelope_B
-    envelope_B = float(env_b) if env_b is not None else None
-
-    if defocus_model == "linear":
-        defocus_0 = float(result_1x1.defocus_model.data.mean().cpu().item())
-        design = torch.stack(
-            [
-                positions_flat[:, 1] - 0.5,
-                positions_flat[:, 2] - 0.5,
-            ],
-            dim=1,
-        )
-        target = (defocus_flat.squeeze(1) - defocus_0).to(torch.float64).unsqueeze(1)
-        design = design.to(torch.float64)
-        sol = (torch.linalg.pinv(design) @ target).squeeze(1)
-        # Replace NaN from singular/rank-deficient design with 0 for debuggable result
-        sol = torch.nan_to_num(sol, nan=0.0, posinf=0.0, neginf=0.0)
-        u = float(sol[0].item())
-        v = float(sol[1].item()) if sol.numel() > 1 else 0.0
-        if _math.isnan(u):
-            u = 0.0
-        if _math.isnan(v):
-            v = 0.0
-        grad_mag = _math.sqrt(u * u + v * v)
-        if _math.isnan(grad_mag) or grad_mag <= 0.0:
-            grad_mag = 0.0
-            angle_deg = 0.0
-            warnings.warn(
-                "Linear defocus gradient from 1D fits is zero or NaN (e.g. singular "
-                "design matrix or no spatial defocus variation). Check patch positions "
-                "and per-patch defocus values.",
-                UserWarning,
-                stacklevel=2,
-            )
-        else:
-            angle_rad = _math.atan2(v, u)
-            angle_deg = (angle_rad * 180.0 / _math.pi + 180.0) % 180.0
-            if _math.isnan(angle_deg):
-                angle_deg = 0.0
-                warnings.warn(
-                    "Linear defocus gradient angle was NaN; set to 0.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        linear_model = LinearDefocusModel(
-            defocus_0=defocus_0,
-            defocus_gradient_magnitude=grad_mag,
-            defocus_gradient_angle=angle_deg,
-        )
-        mean_defocus = defocus_0
-        return Defocus2DResults(
-            defocus_model_type="linear",
-            defocus_model=linear_model,
-            astigmatism=astig,
-            astigmatism_angle=result_1x1.astigmatism_angle or 0.0,
-            envelope_B=envelope_B,
-            defocus_u=mean_defocus + astig / 2.0,
-            defocus_v=mean_defocus - astig / 2.0,
-        )
-    # grid: fit 3D spline to (positions, defocus_flat)
-    grid_data = (
-        torch.ones((nt, nh, nw), device=device, dtype=patch_power_spectra.dtype)
-        * initial_defocus
-    )
-    grid_model = CubicCatmullRomGrid3d.from_grid_data(grid_data).to(device)
-    optimiser = torch.optim.Adam(grid_model.parameters(), lr=0.01)
-    n_fit_steps = 100
-    for _ in range(n_fit_steps):
-        optimiser.zero_grad()
-        pred = grid_model(positions_flat).squeeze(-1)
-        loss = ((pred - defocus_flat.squeeze(1)) ** 2).mean()
-        loss.backward()
-        optimiser.step()
-    mean_defocus = float(grid_model.data.mean().cpu().item())
-    return Defocus2DResults(
-        defocus_model_type="grid",
-        defocus_model=grid_model,
-        astigmatism=astig,
-        astigmatism_angle=result_1x1.astigmatism_angle or 0.0,
-        envelope_B=envelope_B,
-        defocus_u=mean_defocus + astig / 2.0,
-        defocus_v=mean_defocus - astig / 2.0,
-    )
 
 
 def estimate_ctf(
     image: torch.Tensor,  # (t, h, w) or (h, w)
-    pixel_spacing_angstroms: float,
-    defocus_grid_resolution: tuple[int, int, int],  # (t, h, w); linear uses nt only
-    frequency_fit_range_angstroms: tuple[float, float],  # (low, high)
-    defocus_range_microns: tuple[float, float],  # (low, high)
-    voltage_kev: float = 300.0,
-    spherical_aberration_mm: float = 2.7,
-    amplitude_contrast_fraction: float = 0.07,
-    patch_sidelength: int = 256,
-    device: torch.device = None,
-    debug: bool = False,
-    optimize_astigmatism: bool = False,
-    defocus_model: Literal["grid", "linear"] = "grid",
-    use_1d_defocus_for_spatial: bool = False,
-    linear_fix_defocus_0_from_1x1: bool = False,
-    refine_steps_1d: int = 40,
-    n_iterations_2d: int = 100,
-    optimize_envelope_1d: bool = True,
-    b_range_1d: tuple[float, float] = (0.0, 100.0),
-    b_step_1d: float = 1.0,
-    initial_envelope_B: Optional[float] = None,
-    optimize_phase_shift: bool = False,
-    phase_shift_model: Literal["grid", "quadratic"] = "grid",
-    initial_phase_shift: float = 0.0,
-    laser_params: Optional[LaserParams] = None,
-    results_path: Optional[str] = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    optical_params: OpticalParams,
+    fitting_params: CTFFittingParams,
+    laser_params: LaserParams | None = None,
+    device: torch.device | None = None,
+    results_path: str | None = None,
+) -> tuple[torch.Tensor, Defocus1DResults, Defocus2DResults]:
     """
     Estimate CTF from a 2D or 3D image.
 
     Parameters
     ----------
-    image: torch.Tensor
-        §`(t, h, w)` or `(h, w)` array containing 2D or 3D image data.
-    pixel_spacing_angstroms: float
-        Isotropic pixel spacing in angstroms.
-    defocus_grid_resolution: tuple[int, int, int]
-        Resolution of the defocus grid ``(nt, nh, nw)``. When ``defocus_model="linear"``
-        only the first element (nt) is used; nh and nw are ignored.
-    frequency_fit_range_angstroms: tuple[float, float]
-        `(low, high)` spatial frequency cutoffs for fitting in angstroms.
-    defocus_range_microns: tuple[float, float]
-        `(low, high)` defoci in microns for initial 1D fit.
-    voltage_kev: float
-        Acceleration voltage in keV.
-    spherical_aberration_mm: float
-        Spherical aberration in mm.
-    amplitude_contrast_fraction: float
-        Amplitude contrast fraction.
-    patch_sidelength: int
-        If >= 0: sidelength of the patches to extract from the image (with 50% overlap).
-        If < 0: whole-image mode—no patching; the full image is used as a single patch
-        per frame, and defocus_grid_resolution must have nh=1 and nw=1.
-    device: torch.device, optional
-        Device for computation. If None, uses ``cuda:0`` when available, else ``cpu``.
-    debug: bool
-        Whether to return debug information.
-    optimize_astigmatism: bool
-        Whether to optimize the astigmatism.
-    defocus_model: {"grid", "linear"}, optional
-        Defocus model: "grid" (3D spline over t,x,y) or "linear" (tilt model).
-        Default "grid".
-    use_1d_defocus_for_spatial: bool, optional
-        When True: get astigmatism from 2D fit at 1x1, then build defocus field
-        from per-patch 1D gradient-descent refinement only (no 1D grid search),
-        using the 2D defocus as initial for each patch. Fit grid or linear to
-        those refined values. For grid model this runs only when (nh, nw) > (1, 1);
-        for linear model it can run at any resolution (including 1x1). Default False.
-    linear_fix_defocus_0_from_1x1: bool, optional
-        When True and defocus_model is "linear": run 2D fit at 1x1 first, fix
-        defocus_0 to that value, and fit only gradient (and t-splines if nt>1)
-        via 2D ZNCC. For linear model with gradient from 1D fits, use
-        use_1d_defocus_for_spatial=True instead. Default False.
-    refine_steps_1d: int, optional
-        Number of gradient-descent refinement steps for 1D defocus (mean and
-        per-patch when use_1d_defocus_for_spatial). Default 40.
-    n_iterations_2d: int, optional
-        Number of optimizer steps for 2D defocus (grid or linear) estimation.
-        Default 100.
-    optimize_envelope_1d: bool
-        Whether to optimize the envelope in 1D.
-    b_range_1d: tuple[float, float]
-        `(low, high)` B-factor range for envelope optimization in 1D.
-    b_step_1d: float
-        Step size for envelope optimization in 1D.
-    initial_envelope_B: Optional[float]
-        Initial B-factor for envelope optimization in 2D.
-    optimize_phase_shift: bool, optional
-        Whether to estimate phase shift (0-180°) alongside defocus. Default False.
-    phase_shift_model: {"grid", "quadratic"}, optional
-        For 2D: "grid" (per-patch phase shift) or "quadratic" (spatial quadratic).
-        Used only when optimize_phase_shift is True. Default "grid".
-    initial_phase_shift: float, optional
-        Initial phase shift in degrees when optimizing. Default 0.0.
-    laser_params: Optional[LaserParams], optional
-        If set, use LPP (laser phase plate) CTF model for 2D estimation;
-        if None (default), use standard calculate_ctf_2d.
-    results_path: Optional[str], optional
+    image : torch.Tensor
+        (t, h, w) or (h, w) array containing 2D or 3D image data.
+    optical_params : OpticalParams
+        Pixel spacing, voltage, Cs, amplitude contrast.
+    fitting_params : CTFFittingParams
+        Defocus grid resolution, frequency range, patch size, and fitting options.
+    laser_params : LaserParams | None, optional
+        If set, use LPP CTF model for 2D estimation; if None, use standard CTF.
+    device : torch.device | None, optional
+        Device for computation. If None, uses cuda:0 when available, else cpu.
+    results_path : str | None, optional
         If set, write hierarchical results (defocus, phase shift, B envelope)
-        to this JSON file path.
+        to this path.
 
     Returns
     -------
-    mean_ps: torch.Tensor
+    mean_ps : torch.Tensor
         Mean power spectrum of the patches.
-    result1d: Defocus1DResults
+    result1d : Defocus1DResults
         Results from 1D defocus estimation.
-    result2d: Defocus2DResults
+    result2d : Defocus2DResults
         Results from 2D defocus estimation.
     """
+    # -------------------------------------------------------------------------
+    # Step 1: Setup — device, normalize image, optional rescaling
+    # -------------------------------------------------------------------------
     if device is None:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # coerce to float and move to device
     image = image.float().to(device)
 
-    # pack image to (t, h, w)
+    # Ensure shape (t, h, w); single 2D image becomes (1, h, w)
     image, _ = einops.pack([image], pattern="* h w")
 
-    # normalize images to mean 0 std 1
     image = normalize_image(image)
-    new_spacing = max(3.0, pixel_spacing_angstroms)
+    new_spacing = max(3.0, optical_params.pixel_spacing_angstroms)
     image, _ = fourier_rescale_2d(
-        image=image, source_spacing=pixel_spacing_angstroms, target_spacing=new_spacing
+        image=image,
+        source_spacing=optical_params.pixel_spacing_angstroms,
+        target_spacing=new_spacing,
     )
     t, h, w = image.shape
 
-    use_whole_image = patch_sidelength < 0
-    if not use_whole_image and (h < patch_sidelength or w < patch_sidelength):
+    # -------------------------------------------------------------------------
+    # Step 2: Patch extraction — whole image or overlapping patches
+    # -------------------------------------------------------------------------
+    use_whole_image = fitting_params.patch_sidelength < 0
+    if not use_whole_image and (
+        h < fitting_params.patch_sidelength or w < fitting_params.patch_sidelength
+    ):
         raise ValueError(
             f"Rescaled image size ({h}, {w}) is smaller than patch_sidelength "
-            f"({patch_sidelength}). Use a larger image, a smaller patch_sidelength, "
-            "or less aggressive rescaling (e.g. pixel_spacing_angstroms closer to "
-            "the internal target spacing)."
+            f"({fitting_params.patch_sidelength}). Use a larger image, a smaller "
+            "patch_sidelength, or less aggressive rescaling (e.g. "
+            "pixel_spacing_angstroms closer to the internal target spacing)."
         )
 
     if use_whole_image:
         print("Using whole-image mode")
-        nt, nh, nw = defocus_grid_resolution
+        nt, nh, nw = fitting_params.defocus_grid_resolution
         if nh != 1 or nw != 1:
             raise ValueError(
                 "When using whole-image mode (patch_sidelength < 0), "
@@ -441,52 +122,67 @@ def estimate_ctf(
     else:
         patches, patch_centers = patch_grid(
             images=image,
-            patch_shape=(1, patch_sidelength, patch_sidelength),
-            patch_step=(1, patch_sidelength // 2, patch_sidelength // 2),
+            patch_shape=(
+                1,
+                fitting_params.patch_sidelength,
+                fitting_params.patch_sidelength,
+            ),
+            patch_step=(
+                1,
+                fitting_params.patch_sidelength // 2,
+                fitting_params.patch_sidelength // 2,
+            ),
         )
-        image_sidelength_for_1d = patch_sidelength
+        image_sidelength_for_1d = fitting_params.patch_sidelength
 
     patches = einops.rearrange(patches, "t gh gw 1 ph pw -> t gh gw ph pw")
 
-    # calculate power spectra of all patches and mean of all ps
+    # -------------------------------------------------------------------------
+    # Step 3: Power spectra — FFT of each patch and global mean
+    # -------------------------------------------------------------------------
     patch_ps = torch.abs(torch.fft.rfftn(patches, dim=(-2, -1))) ** 2
     mean_ps = einops.reduce(patch_ps, "... ph pw -> ph pw", reduction="mean")
 
-    nt, nh, nw = defocus_grid_resolution
-    use_1d_spatial = use_1d_defocus_for_spatial and (
-        defocus_model == "linear" or (nh > 1 or nw > 1)
+    # Decide whether to build 2D defocus from per-patch 1D fits (use_1d_spatial)
+    # or from a single 2D optimisation over the full grid.
+    nt, nh, nw = fitting_params.defocus_grid_resolution
+    use_1d_spatial = fitting_params.use_1d_defocus_for_spatial and (
+        fitting_params.defocus_model == "linear" or (nh > 1 or nw > 1)
     )
-    # When using per-patch 1D defocus, fit background once on mean and reuse for all
+    # If using per-patch 1D: fit background spline once on mean spectrum, reuse for all
     bg_mean: Optional[Any] = None
     if use_1d_spatial:
         bg_mean = fit_background_spline_1d(
             power_spectrum=mean_ps,
             image_sidelength=image_sidelength_for_1d,
-            frequency_fit_range_angstroms=frequency_fit_range_angstroms,
+            frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
             pixel_spacing_angstroms=new_spacing,
         )
 
-    # estimate defocus in 1D from mean of power spectra
-    result1d = estimate_defocus_1d(
+    # -------------------------------------------------------------------------
+    # Step 4: 1D CTF estimation — defocus (and optional B, phase) from mean spectrum
+    # -------------------------------------------------------------------------
+    result1d = estimate_ctf_1d(
         power_spectrum=mean_ps,
         image_sidelength=image_sidelength_for_1d,
-        frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-        defocus_range_microns=defocus_range_microns,
-        voltage_kev=voltage_kev,
-        spherical_aberration_mm=spherical_aberration_mm,
-        amplitude_contrast=amplitude_contrast_fraction,
+        frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
+        defocus_range_microns=fitting_params.defocus_range_microns,
+        voltage_kev=optical_params.voltage_kev,
+        spherical_aberration_mm=optical_params.spherical_aberration_mm,
+        amplitude_contrast=optical_params.amplitude_contrast_fraction,
         pixel_spacing_angstroms=new_spacing,
-        optimize_envelope=optimize_envelope_1d,
-        b_range=b_range_1d,
-        b_step=b_step_1d,
-        refine_steps=refine_steps_1d,
+        optimize_envelope=fitting_params.optimize_envelope_1d,
+        b_range=fitting_params.b_range_1d,
+        b_step=fitting_params.b_step_1d,
+        refine_steps=fitting_params.refine_steps_1d,
         background_result=bg_mean,
-        optimize_phase_shift=optimize_phase_shift,
-        initial_phase_shift=initial_phase_shift,
+        optimize_phase_shift=fitting_params.optimize_phase_shift,
+        initial_phase_shift=fitting_params.initial_phase_shift,
     )
 
-    # estimate 2D background and subtract prior to 2D defocus estimation
-    # Use actual (h, w) in whole-image mode so background shape matches mean_ps
+    # -------------------------------------------------------------------------
+    # Step 5: 2D background — estimate and subtract before 2D defocus fit
+    # -------------------------------------------------------------------------
     image_shape_2d = (
         (h, w)
         if use_whole_image
@@ -498,13 +194,15 @@ def estimate_ctf(
     )
     patch_ps -= background_2d
 
-    # estimate defocus in 2D with gradient based optimisation
+    # -------------------------------------------------------------------------
+    # Step 6: Prepare 2D fit — normalised positions, initial defocus/B/phase from 1D
+    # -------------------------------------------------------------------------
     image_dimension_lengths = (
         torch.tensor([t - 1, h - 1, w - 1]).float().to(patch_ps.device)
     )
     normalised_patch_positions = patch_centers / image_dimension_lengths
 
-    initial_envelope_B_2d = initial_envelope_B
+    initial_envelope_B_2d = fitting_params.initial_envelope_B
     if initial_envelope_B_2d is None and result1d.ctf_model.envelope_B is not None:
         # use 1D-estimated B for 2D envelope
         if isinstance(result1d.ctf_model.envelope_B, torch.Tensor):
@@ -522,54 +220,63 @@ def estimate_ctf(
     else:
         initial_defocus_2d = float(initial_defocus_2d)
 
-    initial_phase_shift_2d = initial_phase_shift
-    if optimize_phase_shift and result1d.ctf_model.phase_shift_degrees is not None:
+    initial_phase_shift_2d = fitting_params.initial_phase_shift
+    if (
+        fitting_params.optimize_phase_shift
+        and result1d.ctf_model.phase_shift_degrees is not None
+    ):
         p = result1d.ctf_model.phase_shift_degrees
         initial_phase_shift_2d = (
             float(p.cpu().item()) if isinstance(p, torch.Tensor) else float(p)
         )
 
+    # -------------------------------------------------------------------------
+    # Branch A: Build 2D defocus from per-patch 1D fits (grid or linear over space)
+    # -------------------------------------------------------------------------
     if use_1d_spatial:
+        # 2D fit at center only (1x1) to get astigmatism and center defocus
         result_1x1 = _estimate_defocus_2d_at_1x1(
             patch_power_spectra=patch_ps,
-            defocus_grid_resolution=defocus_grid_resolution,
-            frequency_fit_range_angstroms=frequency_fit_range_angstroms,
+            defocus_grid_resolution=fitting_params.defocus_grid_resolution,
+            frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
             initial_defocus=initial_defocus_2d,
             pixel_spacing_angstroms=new_spacing,
-            optimize_astigmatism=optimize_astigmatism,
+            optimize_astigmatism=fitting_params.optimize_astigmatism,
             initial_envelope_B=initial_envelope_B_2d,
-            n_iterations=n_iterations_2d,
-            debug=debug,
-            optimize_phase_shift=optimize_phase_shift,
-            phase_shift_model=phase_shift_model,
+            n_iterations=fitting_params.n_iterations_2d,
+            debug=fitting_params.debug,
+            optimize_phase_shift=fitting_params.optimize_phase_shift,
+            phase_shift_model=fitting_params.phase_shift_model,
             initial_phase_shift=initial_phase_shift_2d,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            voltage_kev=optical_params.voltage_kev,
+            spherical_aberration_mm=optical_params.spherical_aberration_mm,
+            amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
         )
+        # Per-patch 1D defocus, then fit grid or linear model to those values
         result2d = _defocus_field_from_1d_fits(
             patch_power_spectra=patch_ps,
             normalised_patch_positions=normalised_patch_positions,
             result_1x1=result_1x1,
-            defocus_model=defocus_model,
-            defocus_grid_resolution=defocus_grid_resolution,
+            defocus_model=fitting_params.defocus_model,
+            defocus_grid_resolution=fitting_params.defocus_grid_resolution,
             initial_defocus=initial_defocus_2d,
             image_sidelength=image_sidelength_for_1d,
-            frequency_fit_range_angstroms=frequency_fit_range_angstroms,
-            defocus_range_microns=defocus_range_microns,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
+            defocus_range_microns=fitting_params.defocus_range_microns,
+            voltage_kev=optical_params.voltage_kev,
+            spherical_aberration_mm=optical_params.spherical_aberration_mm,
+            amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             pixel_spacing_angstroms=new_spacing,
-            optimize_envelope_1d=optimize_envelope_1d,
-            b_range_1d=b_range_1d,
-            b_step_1d=b_step_1d,
-            refine_steps_1d=refine_steps_1d,
+            optimize_envelope_1d=fitting_params.optimize_envelope_1d,
+            b_range_1d=fitting_params.b_range_1d,
+            b_step_1d=fitting_params.b_step_1d,
+            refine_steps_1d=fitting_params.refine_steps_1d,
             background_result=bg_mean,
             device=patch_ps.device,
-            optimize_phase_shift=optimize_phase_shift,
+            optimize_phase_shift=fitting_params.optimize_phase_shift,
         )
+        # For linear defocus: compute tilt axis and magnitude (degrees) for reporting
         if result2d.defocus_model_type == "linear":
             axis_deg, tilt_deg = linear_tilt_axis_and_magnitude_deg(
                 result2d, new_spacing, min(h, w)
@@ -580,7 +287,11 @@ def estimate_ctf(
                     "tilt_magnitude_deg": tilt_deg,
                 }
             )
-        if optimize_phase_shift and result_1x1.phase_shift_degrees is not None:
+        # Copy phase-shift result from 1x1 fit into result2d when optimising phase
+        if (
+            fitting_params.optimize_phase_shift
+            and result_1x1.phase_shift_degrees is not None
+        ):
             result2d = result2d.model_copy(
                 update={
                     "phase_shift_degrees": result_1x1.phase_shift_degrees,
@@ -593,27 +304,34 @@ def estimate_ctf(
             write_results_json(result2d, results_path)
         return mean_ps, result1d, result2d
 
+    # -------------------------------------------------------------------------
+    # Branch B: Single 2D defocus fit (grid or linear) over all patches
+    # -------------------------------------------------------------------------
+    # Optionally run 1x1 fit first for defocus_0 / get astig and phase to initialize
     fix_defocus_0_val = None
     initial_astigmatism_2d = 0.0
     initial_astigmatism_angle_2d = 0.0
     initial_phase_shift_for_2d = initial_phase_shift_2d
-    if defocus_model == "linear" and linear_fix_defocus_0_from_1x1:
+    if (
+        fitting_params.defocus_model == "linear"
+        and fitting_params.linear_fix_defocus_0_from_1x1
+    ):
         result_1x1 = _estimate_defocus_2d_at_1x1(
             patch_power_spectra=patch_ps,
-            defocus_grid_resolution=defocus_grid_resolution,
-            frequency_fit_range_angstroms=frequency_fit_range_angstroms,
+            defocus_grid_resolution=fitting_params.defocus_grid_resolution,
+            frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
             initial_defocus=initial_defocus_2d,
             pixel_spacing_angstroms=new_spacing,
-            optimize_astigmatism=optimize_astigmatism,
+            optimize_astigmatism=fitting_params.optimize_astigmatism,
             initial_envelope_B=initial_envelope_B_2d,
-            n_iterations=n_iterations_2d,
-            debug=debug,
-            optimize_phase_shift=optimize_phase_shift,
-            phase_shift_model=phase_shift_model,
+            n_iterations=fitting_params.n_iterations_2d,
+            debug=fitting_params.debug,
+            optimize_phase_shift=fitting_params.optimize_phase_shift,
+            phase_shift_model=fitting_params.phase_shift_model,
             initial_phase_shift=initial_phase_shift_2d,
-            voltage_kev=voltage_kev,
-            spherical_aberration_mm=spherical_aberration_mm,
-            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            voltage_kev=optical_params.voltage_kev,
+            spherical_aberration_mm=optical_params.spherical_aberration_mm,
+            amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
         )
         fix_defocus_0_val = float(result_1x1.defocus_model.data.mean().cpu().item())
@@ -621,32 +339,37 @@ def estimate_ctf(
             initial_astigmatism_2d = result_1x1.astigmatism
         if result_1x1.astigmatism_angle is not None:
             initial_astigmatism_angle_2d = result_1x1.astigmatism_angle
-        if optimize_phase_shift and result_1x1.phase_shift_degrees is not None:
+        if (
+            fitting_params.optimize_phase_shift
+            and result_1x1.phase_shift_degrees is not None
+        ):
             initial_phase_shift_for_2d = result_1x1.phase_shift_degrees
 
-    result2d = estimate_defocus_2d(
+    # Full 2D defocus optimisation (grid or linear model)
+    result2d = estimate_ctf_2d(
         patch_power_spectra=patch_ps,
         normalised_patch_positions=normalised_patch_positions,
-        defocus_grid_resolution=defocus_grid_resolution,
-        frequency_fit_range_angstroms=frequency_fit_range_angstroms,
+        defocus_grid_resolution=fitting_params.defocus_grid_resolution,
+        frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
         initial_defocus=initial_defocus_2d,
         pixel_spacing_angstroms=new_spacing,
-        debug=debug,
-        optimize_astigmatism=optimize_astigmatism,
-        defocus_model=defocus_model,
+        debug=fitting_params.debug,
+        optimize_astigmatism=fitting_params.optimize_astigmatism,
+        defocus_model=fitting_params.defocus_model,
         initial_envelope_B=initial_envelope_B_2d,
         initial_astigmatism=initial_astigmatism_2d,
         initial_astigmatism_angle=initial_astigmatism_angle_2d,
         fix_defocus_0=fix_defocus_0_val,
-        n_iterations=n_iterations_2d,
-        optimize_phase_shift=optimize_phase_shift,
-        phase_shift_model=phase_shift_model,
+        n_iterations=fitting_params.n_iterations_2d,
+        optimize_phase_shift=fitting_params.optimize_phase_shift,
+        phase_shift_model=fitting_params.phase_shift_model,
         initial_phase_shift=initial_phase_shift_for_2d,
-        voltage_kev=voltage_kev,
-        spherical_aberration_mm=spherical_aberration_mm,
-        amplitude_contrast_fraction=amplitude_contrast_fraction,
+        voltage_kev=optical_params.voltage_kev,
+        spherical_aberration_mm=optical_params.spherical_aberration_mm,
+        amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
         laser_params=laser_params,
     )
+    # For linear defocus: add tilt axis and magnitude (degrees) to result
     if result2d.defocus_model_type == "linear":
         axis_deg, tilt_deg = linear_tilt_axis_and_magnitude_deg(
             result2d, new_spacing, min(h, w)
@@ -657,6 +380,7 @@ def estimate_ctf(
                 "tilt_magnitude_deg": tilt_deg,
             }
         )
+    # Optionally write defocus, phase shift, B envelope to JSON
     if results_path is not None:
         write_results_json(result2d, results_path)
     return mean_ps, result1d, result2d

@@ -3,7 +3,7 @@
 import torch
 from torch_ctf import calculate_total_phase_shift
 
-from torch_ctf_estimation.estimate_defocus_1d import Defocus1DResults
+from torch_ctf_estimation.models import Defocus1DResults
 
 try:
     import matplotlib.pyplot as plt

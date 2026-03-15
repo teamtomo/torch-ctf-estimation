@@ -7,29 +7,46 @@ import tempfile
 import torch
 
 from torch_ctf_estimation.estimate_ctf import estimate_ctf
-from torch_ctf_estimation.utils.data_io import (
+from torch_ctf_estimation.models import (
+    CTFFittingParams,
     CTFResultsOutput,
+    OpticalParams,
+)
+from torch_ctf_estimation.utils.data_io import (
     read_results_json,
     results_to_output_model,
     write_results_json,
 )
 
 
+def _default_optical():
+    return OpticalParams(
+        pixel_spacing_angstroms=1.0,
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+    )
+
+
+def _default_fitting(**kwargs):
+    p = {
+        "defocus_grid_resolution": (1, 2, 2),
+        "frequency_fit_range_angstroms": (30.0, 5.0),
+        "defocus_range_microns": (0.5, 3.0),
+        "patch_sidelength": 128,
+    }
+    p.update(kwargs)
+    return CTFFittingParams(**p)
+
+
 def test_results_to_output_model_linear_defocus():
     """results_to_output_model with Defocus2DResults that has linear defocus model."""
     image = torch.randn(512, 512)
     _mean_ps, _result1d, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 1, 1),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        defocus_model="linear",
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(defocus_grid_resolution=(1, 1, 1), defocus_model="linear"),
+        device=torch.device("cpu"),
     )
     output = results_to_output_model(result2d)
     assert isinstance(output, CTFResultsOutput)
@@ -48,17 +65,10 @@ def test_results_to_output_model_grid_defocus():
     """results_to_output_model with Defocus2DResults that has grid defocus model."""
     image = torch.randn(512, 512)
     _mean_ps, _result1d, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 2, 2),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        defocus_model="grid",
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(defocus_model="grid"),
+        device=torch.device("cpu"),
     )
     output = results_to_output_model(result2d)
     assert output.defocus_results.defocus_model_type == "grid"
@@ -73,18 +83,10 @@ def test_results_to_output_model_phase_shift_quadratic():
     """results_to_output_model with phase shift quadratic model."""
     image = torch.randn(512, 512)
     _mean_ps, _, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 2, 2),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        optimize_phase_shift=True,
-        phase_shift_model="quadratic",
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(optimize_phase_shift=True, phase_shift_model="quadratic"),
+        device=torch.device("cpu"),
     )
     output = results_to_output_model(result2d)
     assert output.phase_shift_params is not None
@@ -101,18 +103,10 @@ def test_results_to_output_model_phase_shift_grid():
     """results_to_output_model with phase shift grid model."""
     image = torch.randn(512, 512)
     _mean_ps, _, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 2, 2),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        optimize_phase_shift=True,
-        phase_shift_model="grid",
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(optimize_phase_shift=True, phase_shift_model="grid"),
+        device=torch.device("cpu"),
     )
     output = results_to_output_model(result2d)
     assert output.phase_shift_params is not None
@@ -127,16 +121,10 @@ def test_results_to_output_model_envelope_B_present_when_set():
     """envelope_B is present in output when set on result (and null when not)."""
     image = torch.randn(512, 512)
     _mean_ps, _result1d, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 2, 2),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(),
+        device=torch.device("cpu"),
     )
     output = results_to_output_model(result2d)
     dump = output.model_dump()
@@ -149,16 +137,10 @@ def test_write_results_json_and_read_results_json():
     """write_results_json to temp file and read_results_json round-trip."""
     image = torch.randn(512, 512)
     _mean_ps, _result1d, result2d = estimate_ctf(
-        image=image,
-        pixel_spacing_angstroms=1.0,
-        defocus_grid_resolution=(1, 2, 2),
-        frequency_fit_range_angstroms=(30.0, 5.0),
-        defocus_range_microns=(0.5, 3.0),
-        voltage_kev=300.0,
-        spherical_aberration_mm=2.7,
-        amplitude_contrast_fraction=0.1,
-        patch_sidelength=128,
-        device="cpu",
+        image,
+        _default_optical(),
+        _default_fitting(),
+        device=torch.device("cpu"),
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         path = f.name
@@ -186,17 +168,11 @@ def test_estimate_ctf_writes_results_when_results_path_given():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         path = f.name
     try:
-        _mean_ps, _result1d, result2d = estimate_ctf(
-            image=image,
-            pixel_spacing_angstroms=1.0,
-            defocus_grid_resolution=(1, 2, 2),
-            frequency_fit_range_angstroms=(30.0, 5.0),
-            defocus_range_microns=(0.5, 3.0),
-            voltage_kev=300.0,
-            spherical_aberration_mm=2.7,
-            amplitude_contrast_fraction=0.1,
-            patch_sidelength=128,
-            device="cpu",
+        _mean_ps, _result1d, _ = estimate_ctf(
+            image,
+            _default_optical(),
+            _default_fitting(),
+            device=torch.device("cpu"),
             results_path=path,
         )
         with open(path, encoding="utf-8") as f:

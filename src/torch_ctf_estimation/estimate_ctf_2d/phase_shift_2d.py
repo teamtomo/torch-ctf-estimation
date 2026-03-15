@@ -1,0 +1,184 @@
+"""Phase shift models for 2D CTF estimation (grid u/v or quadratic C,g,k,alpha)."""
+
+import math
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+import torch
+from torch_cubic_spline_grids import CubicCatmullRomGrid3d
+
+from torch_ctf_estimation.models import QuadraticPhaseShiftModel
+
+
+@dataclass
+class PhaseShiftModels:
+    """
+    Phase shift parameterisation: either grid (u, v) or quadratic (C, g, k, alpha).
+
+    When not optimizing phase, u_grid and v_grid are None and quad_params is None.
+    """
+
+    u_grid: Optional[CubicCatmullRomGrid3d] = None
+    v_grid: Optional[CubicCatmullRomGrid3d] = None
+    quad_params: Optional[dict[str, torch.nn.Parameter]] = None
+
+
+def init_phase_shift_models(
+    optimize_phase_shift: bool,
+    phase_shift_model: Literal["grid", "quadratic"],
+    initial_phase_shift: float,
+    grid_resolution: tuple[int, int, int],
+    device: torch.device,
+) -> Optional[PhaseShiftModels]:
+    """
+    Initialise phase shift models (grid u/v or quadratic params).
+
+    Returns
+    -------
+    PhaseShiftModels or None
+        When optimize_phase_shift is False, returns None.
+    """
+    if not optimize_phase_shift:
+        return None
+    if phase_shift_model == "grid":
+        theta_rad = initial_phase_shift * (math.pi / 180.0)
+        u_init = math.cos(2.0 * theta_rad)
+        v_init = math.sin(2.0 * theta_rad)
+        u_data = torch.ones(size=grid_resolution, device=device) * u_init
+        v_data = torch.ones(size=grid_resolution, device=device) * v_init
+        u_grid = CubicCatmullRomGrid3d.from_grid_data(u_data).to(device)
+        v_grid = CubicCatmullRomGrid3d.from_grid_data(v_data).to(device)
+        return PhaseShiftModels(u_grid=u_grid, v_grid=v_grid, quad_params=None)
+    # quadratic: f(x,y)=C+g*s+k*s^2, s=x*cos(alpha)+y*sin(alpha)
+    quad_params = {
+        "C": torch.nn.Parameter(
+            torch.tensor(initial_phase_shift, device=device, dtype=torch.float32)
+        ),
+        "g": torch.nn.Parameter(torch.tensor(0.0, device=device, dtype=torch.float32)),
+        "k": torch.nn.Parameter(torch.tensor(0.0, device=device, dtype=torch.float32)),
+        "alpha": torch.nn.Parameter(
+            torch.tensor(0.0, device=device, dtype=torch.float32)
+        ),
+    }
+    return PhaseShiftModels(u_grid=None, v_grid=None, quad_params=quad_params)
+
+
+def phase_shift_at_positions(
+    positions_t: torch.Tensor,
+    phase_models: Optional[PhaseShiftModels],
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """
+    Evaluate phase shift (and u, v for unit-circle penalty) at normalised positions.
+
+    positions_t has shape (..., 3) with [t_norm, x_norm, y_norm] in [0,1].
+
+    Returns
+    -------
+    phase_shift_t : torch.Tensor
+        Phase shift in degrees, shape (...,). Zero if phase_models is None.
+    u_t, v_t : torch.Tensor or None
+        For grid model, (u,v) on unit circle for penalty; otherwise None.
+    """
+    if phase_models is None:
+        return (
+            torch.zeros(positions_t.shape[:-1], device=positions_t.device),
+            None,
+            None,
+        )
+    if phase_models.u_grid is not None and phase_models.v_grid is not None:
+        u_t = phase_models.u_grid(positions_t).squeeze(-1)
+        v_t = phase_models.v_grid(positions_t).squeeze(-1)
+        phase_shift_t = torch.remainder(
+            0.5 * torch.atan2(v_t, u_t) * (180.0 / math.pi), 180.0
+        )
+        return phase_shift_t, u_t, v_t
+    # quadratic: f(x,y) = C + g*s + k*s^2, s = x*cos(alpha)+y*sin(alpha)
+    assert phase_models.quad_params is not None
+    x = 2.0 * positions_t[..., 1] - 1.0
+    y = 2.0 * positions_t[..., 2] - 1.0
+    alpha = phase_models.quad_params["alpha"]
+    s = x * torch.cos(alpha) + y * torch.sin(alpha)
+    phase_shift_t = (
+        phase_models.quad_params["C"]
+        + phase_models.quad_params["g"] * s
+        + phase_models.quad_params["k"] * (s**2)
+    )
+    phase_shift_t = torch.clamp(phase_shift_t, min=0.0, max=180.0)
+    return phase_shift_t, None, None
+
+
+def clamp_phase_shift_after_step(
+    phase_models: Optional[PhaseShiftModels],
+) -> None:
+    """Clamp quadratic C to [0, 180] after optimizer step. No-op for grid or None."""
+    if phase_models is None or phase_models.quad_params is None:
+        return
+    with torch.no_grad():
+        phase_models.quad_params["C"].clamp_(min=0.0, max=180.0)
+
+
+def build_phase_shift_result(
+    phase_models: Optional[PhaseShiftModels],
+    _phase_shift_model: Literal["grid", "quadratic"],
+) -> tuple[Optional[float], Optional[object]]:
+    """
+    Build (final_phase_shift_deg, final_phase_shift_model_obj) for Defocus2DResults.
+
+    Returns
+    -------
+    final_phase_shift_deg : float or None
+    final_phase_shift_model_obj :
+        tuple of (u_grid, v_grid), QuadraticPhaseShiftModel, or None
+    """
+    if phase_models is None:
+        return None, None
+    if phase_models.u_grid is not None and phase_models.v_grid is not None:
+        _mu = phase_models.u_grid.data.detach().cpu().mean().item()
+        _mv = phase_models.v_grid.data.detach().cpu().mean().item()
+        _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+        final_deg = min(_p, 180.0 - _p)
+        return final_deg, (phase_models.u_grid, phase_models.v_grid)
+    assert phase_models.quad_params is not None
+    _c = float(phase_models.quad_params["C"].detach().cpu().item())
+    final_deg = min(_c, 180.0 - _c)
+    model_obj = QuadraticPhaseShiftModel(
+        C=float(phase_models.quad_params["C"].detach().cpu().item()),
+        g=float(phase_models.quad_params["g"].detach().cpu().item()),
+        k=float(phase_models.quad_params["k"].detach().cpu().item()),
+        alpha_rad=float(phase_models.quad_params["alpha"].detach().cpu().item()),
+    )
+    return final_deg, model_obj
+
+
+def phase_shift_param_groups(
+    phase_models: Optional[PhaseShiftModels],
+    phase_shift_lr: float,
+) -> list[dict]:
+    """Return param groups for Adam for phase shift models."""
+    if phase_models is None:
+        return []
+    out: list[dict] = []
+    if phase_models.u_grid is not None and phase_models.v_grid is not None:
+        out.append({"params": phase_models.u_grid.parameters(), "lr": phase_shift_lr})
+        out.append({"params": phase_models.v_grid.parameters(), "lr": phase_shift_lr})
+    if phase_models.quad_params is not None:
+        out.append(
+            {"params": list(phase_models.quad_params.values()), "lr": phase_shift_lr}
+        )
+    return out
+
+
+def phase_shift_trace_value(
+    phase_models: Optional[PhaseShiftModels],
+) -> Optional[float]:
+    """Single scalar for trace list (mean phase this step)."""
+    if phase_models is None:
+        return None
+    if phase_models.u_grid is not None and phase_models.v_grid is not None:
+        _mu = phase_models.u_grid.data.detach().cpu().mean().item()
+        _mv = phase_models.v_grid.data.detach().cpu().mean().item()
+        _p = (0.5 * math.degrees(math.atan2(_mv, _mu))) % 180.0
+        return min(_p, 180.0 - _p)
+    assert phase_models.quad_params is not None
+    _c = float(phase_models.quad_params["C"].detach().cpu().item())
+    return min(_c, 180.0 - _c)

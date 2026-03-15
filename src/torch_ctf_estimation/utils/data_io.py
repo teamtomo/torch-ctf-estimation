@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from teamtomo_basemodel import BaseModelTeamTomo
 from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 
-from torch_ctf_estimation.models import LinearDefocusModel, QuadraticPhaseShiftModel
+from torch_ctf_estimation.models import (
+    CTFResultsOutput,
+    DefocusResultsOutput,
+    GridDefocusOutput,
+    LinearDefocusModel,
+    LinearDefocusOutput,
+    PhaseShiftGridOutput,
+    PhaseShiftParamsOutput,
+    PhaseShiftQuadraticOutput,
+    QuadraticPhaseShiftModel,
+)
 
 if TYPE_CHECKING:
-    from torch_ctf_estimation.estimate_defocus_2d import Defocus2DResults
+    from torch_ctf_estimation.models import Defocus2DResults
 
 
 def _astigmatism_angle_to_m90_p90(angle_0_180: float | None) -> float | None:
@@ -32,77 +41,7 @@ def _tensor_to_list(x: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Output models (JSON-serializable; subclass BaseModelTeamTomo)
-# ---------------------------------------------------------------------------
-
-
-class LinearDefocusOutput(BaseModelTeamTomo):
-    """Linear defocus model output: defocus_0 + gradient."""
-
-    defocus_0: float
-    defocus_gradient_magnitude: float
-    defocus_gradient_angle: float
-    defocus_0_spline_data: list[float] | None = None
-    gradient_magnitude_spline_data: list[float] | None = None
-    angle_u_spline_data: list[float] | None = None
-    angle_v_spline_data: list[float] | None = None
-
-
-class GridDefocusOutput(BaseModelTeamTomo):
-    """Grid defocus model output: shape and values."""
-
-    shape: list[int]
-    values: list[Any]  # nested lists from .tolist()
-
-
-class DefocusResultsOutput(BaseModelTeamTomo):
-    """Defocus results: scalars plus either linear or grid model."""
-
-    defocus_u: float
-    defocus_v: float
-    astigmatism_angle_deg: float | None = None
-    defocus_model_type: Literal["grid", "linear"]
-    linear_defocus: LinearDefocusOutput | None = None
-    grid_defocus: GridDefocusOutput | None = None
-    tilt_axis_angle_deg: float | None = None
-    tilt_magnitude_deg: float | None = None
-
-
-class PhaseShiftQuadraticOutput(BaseModelTeamTomo):
-    """Quadratic phase shift coefficients."""
-
-    C: float
-    g: float
-    k: float
-    alpha_rad: float
-
-
-class PhaseShiftGridOutput(BaseModelTeamTomo):
-    """Phase shift grid: u and v grids (each shape + values)."""
-
-    grid_u: dict[str, Any]  # {"shape": [...], "values": [...]}
-    grid_v: dict[str, Any]
-
-
-class PhaseShiftParamsOutput(BaseModelTeamTomo):
-    """Phase shift params: scalar plus either quadratic or grid model."""
-
-    phase_shift_degrees: float
-    phase_shift_model_type: Literal["grid", "quadratic"]
-    quadratic: PhaseShiftQuadraticOutput | None = None
-    grid: PhaseShiftGridOutput | None = None
-
-
-class CTFResultsOutput(BaseModelTeamTomo):
-    """Top-level CTF estimation results for JSON export."""
-
-    defocus_results: DefocusResultsOutput
-    phase_shift_params: PhaseShiftParamsOutput | None = None
-    envelope_B: float | None = None
-
-
-# ---------------------------------------------------------------------------
-# Conversion from Defocus2DResults
+# Conversion from Defocus2DResults (output models live in models.output_models)
 # ---------------------------------------------------------------------------
 
 
@@ -259,7 +198,7 @@ def read_results_json(path: str | Path) -> CTFResultsOutput:
     CTFResultsOutput
         The deserialized results model.
     """
-    return cast(CTFResultsOutput, CTFResultsOutput.from_json(path))
+    return cast("CTFResultsOutput", CTFResultsOutput.from_json(path))
 
 
 __all__ = [
