@@ -47,7 +47,8 @@ dependencies = [
     "torch-fourier-rescale>=0.1.1",
     "torch-fourier-filter>=0.2.6",
     "torch-ctf",
-    "pydantic"
+    "pydantic",
+    "teamtomo-basemodel",
 ]
 
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies

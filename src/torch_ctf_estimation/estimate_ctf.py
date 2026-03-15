@@ -20,6 +20,7 @@ from torch_ctf_estimation.estimate_defocus_2d import (
     linear_tilt_axis_and_magnitude_deg,
 )
 from torch_ctf_estimation.models import LaserParams, LinearDefocusModel
+from torch_ctf_estimation.utils.data_io import write_results_json
 from torch_ctf_estimation.utils.estimate_background_2d import estimate_background_2d
 from torch_ctf_estimation.utils.normalize import normalize_image
 
@@ -310,6 +311,7 @@ def estimate_ctf(
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
     laser_params: Optional[LaserParams] = None,
+    results_path: Optional[str] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Estimate CTF from a 2D or 3D image.
@@ -381,6 +383,9 @@ def estimate_ctf(
     laser_params: Optional[LaserParams], optional
         If set, use LPP (laser phase plate) CTF model for 2D estimation;
         if None (default), use standard calculate_ctf_2d.
+    results_path: Optional[str], optional
+        If set, write hierarchical results (defocus, phase shift, B envelope)
+        to this JSON file path.
 
     Returns
     -------
@@ -584,6 +589,8 @@ def estimate_ctf(
                     "phase_shift_trace": result_1x1.phase_shift_trace,
                 }
             )
+        if results_path is not None:
+            write_results_json(result2d, results_path)
         return mean_ps, result1d, result2d
 
     fix_defocus_0_val = None
@@ -650,4 +657,6 @@ def estimate_ctf(
                 "tilt_magnitude_deg": tilt_deg,
             }
         )
+    if results_path is not None:
+        write_results_json(result2d, results_path)
     return mean_ps, result1d, result2d

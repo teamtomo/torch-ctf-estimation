@@ -1318,7 +1318,7 @@ def estimate_defocus_2d(
     phase_shift_lr: float = 5.0,
     voltage_kev: float = 300.0,
     spherical_aberration_mm: float = 2.7,
-    amplitude_contrast_fraction: float = 0.10,
+    amplitude_contrast_fraction: float = 0.07,
     laser_params: Optional[LaserParams] = None,
 ) -> Defocus2DResults:
     """
@@ -1390,7 +1390,7 @@ def estimate_defocus_2d(
     spherical_aberration_mm : float, optional
         Spherical aberration in mm for CTF simulation. Default 2.7.
     amplitude_contrast_fraction : float, optional
-        Amplitude contrast fraction (0-1) for CTF simulation. Default 0.10.
+        Amplitude contrast fraction (0-1) for CTF simulation. Default 0.07.
     laser_params : Optional[LaserParams], optional
         If set, use LPP (laser phase plate) CTF model; if None, use standard
         calculate_ctf_2d. Default None.
