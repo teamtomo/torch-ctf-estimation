@@ -7,13 +7,17 @@ import einops
 import torch
 from pydantic import BaseModel, ConfigDict, field_serializer
 from pydantic.functional_serializers import SerializerFunctionWrapHandler
-from torch_ctf import calculate_ctf_2d
+from torch_ctf import calc_LPP_ctf_2D, calculate_ctf_2d
 from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 from torch_fourier_filter.bandpass import bandpass_filter
 from torch_fourier_filter.envelopes import b_envelope
 from torch_grid_utils.fftfreq_grid import spatial_frequency_to_fftfreq
 
-from torch_ctf_estimation.models import LinearDefocusModel, QuadraticPhaseShiftModel
+from torch_ctf_estimation.models import (
+    LaserParams,
+    LinearDefocusModel,
+    QuadraticPhaseShiftModel,
+)
 
 # Penalty weight for unit-circle constraint on (u,v): lambda*(u^2+v^2-1)^2
 PHASE_SHIFT_UNIT_CIRCLE_PENALTY = 0.1
@@ -226,6 +230,10 @@ def estimate_defocus_2d_grid(
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast_fraction: float = 0.10,
+    laser_params: Optional[LaserParams] = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a 3D spline grid over (t, x, y).
@@ -404,12 +412,39 @@ def estimate_defocus_2d_grid(
                 phase_shift_t = torch.clamp(phase_shift_t, min=0.0, max=180.0)
             else:
                 phase_shift_t = 0
-            simulated_ctf2s_t = (
-                calculate_ctf_2d(
+            if laser_params is not None:
+                ctf_t = calc_LPP_ctf_2D(
                     defocus=predicted_defocus_t,
-                    voltage=300,
-                    spherical_aberration=2.7,
-                    amplitude_contrast=0.10,
+                    astigmatism=astig_clamped,
+                    astigmatism_angle=astig_angle_clamped,
+                    voltage=voltage_kev,
+                    spherical_aberration=spherical_aberration_mm,
+                    amplitude_contrast=amplitude_contrast_fraction,
+                    pixel_size=pixel_spacing_angstroms,
+                    image_shape=image_shape,
+                    rfft=True,
+                    fftshift=False,
+                    NA=laser_params.NA,
+                    laser_wavelength_angstrom=laser_params.laser_wavelength_angstrom,
+                    focal_length_angstrom=laser_params.focal_length_angstrom,
+                    laser_xy_angle_deg=laser_params.laser_xy_angle_deg,
+                    laser_xz_angle_deg=laser_params.laser_xz_angle_deg,
+                    laser_long_offset_angstrom=laser_params.laser_long_offset_angstrom,
+                    laser_trans_offset_angstrom=laser_params.laser_trans_offset_angstrom,
+                    laser_polarization_angle_deg=laser_params.laser_polarization_angle_deg,
+                    peak_phase_deg=laser_params.peak_phase_deg,
+                    dual_laser=laser_params.dual_laser,
+                    beam_tilt_mrad=None,
+                    even_zernike_coeffs=None,
+                    odd_zernike_coeffs=None,
+                    transform_matrix=None,
+                )
+            else:
+                ctf_t = calculate_ctf_2d(
+                    defocus=predicted_defocus_t,
+                    voltage=voltage_kev,
+                    spherical_aberration=spherical_aberration_mm,
+                    amplitude_contrast=amplitude_contrast_fraction,
                     phase_shift=phase_shift_t,
                     pixel_size=pixel_spacing_angstroms,
                     image_shape=image_shape,
@@ -418,8 +453,7 @@ def estimate_defocus_2d_grid(
                     rfft=True,
                     fftshift=False,
                 )
-                ** 2
-            )
+            simulated_ctf2s_t = ctf_t**2
             simulated_ctf2s_t = simulated_ctf2s_t * (env_2d**2) * bp_filter
             simulated_ctf2s = simulated_ctf2s_t
             if (
@@ -627,6 +661,10 @@ def estimate_defocus_2d_linear(
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast_fraction: float = 0.10,
+    laser_params: Optional[LaserParams] = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a linear (tilt) model in (x, y).
@@ -930,12 +968,39 @@ def estimate_defocus_2d_linear(
             else:
                 phase_shift_t = 0
 
-            simulated_ctf2s_t = (
-                calculate_ctf_2d(
+            if laser_params is not None:
+                ctf_t = calc_LPP_ctf_2D(
                     defocus=predicted_defocus_t,
-                    voltage=300,
-                    spherical_aberration=2.7,
-                    amplitude_contrast=0.10,
+                    astigmatism=astig_clamped,
+                    astigmatism_angle=astig_angle_clamped,
+                    voltage=voltage_kev,
+                    spherical_aberration=spherical_aberration_mm,
+                    amplitude_contrast=amplitude_contrast_fraction,
+                    pixel_size=pixel_spacing_angstroms,
+                    image_shape=image_shape,
+                    rfft=True,
+                    fftshift=False,
+                    NA=laser_params.NA,
+                    laser_wavelength_angstrom=laser_params.laser_wavelength_angstrom,
+                    focal_length_angstrom=laser_params.focal_length_angstrom,
+                    laser_xy_angle_deg=laser_params.laser_xy_angle_deg,
+                    laser_xz_angle_deg=laser_params.laser_xz_angle_deg,
+                    laser_long_offset_angstrom=laser_params.laser_long_offset_angstrom,
+                    laser_trans_offset_angstrom=laser_params.laser_trans_offset_angstrom,
+                    laser_polarization_angle_deg=laser_params.laser_polarization_angle_deg,
+                    peak_phase_deg=laser_params.peak_phase_deg,
+                    dual_laser=laser_params.dual_laser,
+                    beam_tilt_mrad=None,
+                    even_zernike_coeffs=None,
+                    odd_zernike_coeffs=None,
+                    transform_matrix=None,
+                )
+            else:
+                ctf_t = calculate_ctf_2d(
+                    defocus=predicted_defocus_t,
+                    voltage=voltage_kev,
+                    spherical_aberration=spherical_aberration_mm,
+                    amplitude_contrast=amplitude_contrast_fraction,
                     phase_shift=phase_shift_t,
                     pixel_size=pixel_spacing_angstroms,
                     image_shape=image_shape,
@@ -944,8 +1009,7 @@ def estimate_defocus_2d_linear(
                     rfft=True,
                     fftshift=False,
                 )
-                ** 2
-            )
+            simulated_ctf2s_t = ctf_t**2
             simulated_ctf2s_t = simulated_ctf2s_t * (env_2d**2) * bp_filter
             simulated_ctf2s = simulated_ctf2s_t
             if (
@@ -984,7 +1048,7 @@ def estimate_defocus_2d_linear(
                     )
                     angle_u.fill_(_angle_u_init)
                     angle_v.fill_(_angle_v_init)
-            continue
+                continue
         loss_trace.append(float(mean_loss.cpu().item()))
         if optimize_astigmatism:
             if astigmatism.grad is not None and (
@@ -1252,6 +1316,10 @@ def estimate_defocus_2d(
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast_fraction: float = 0.10,
+    laser_params: Optional[LaserParams] = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D from a power spectrum.
@@ -1317,6 +1385,15 @@ def estimate_defocus_2d(
         Initial phase shift in degrees when optimizing. Default 0.0.
     phase_shift_lr : float, optional
         Learning rate for phase shift parameters. Default 5.0.
+    voltage_kev : float, optional
+        Acceleration voltage in keV for CTF simulation. Default 300.0.
+    spherical_aberration_mm : float, optional
+        Spherical aberration in mm for CTF simulation. Default 2.7.
+    amplitude_contrast_fraction : float, optional
+        Amplitude contrast fraction (0-1) for CTF simulation. Default 0.10.
+    laser_params : Optional[LaserParams], optional
+        If set, use LPP (laser phase plate) CTF model; if None, use standard
+        calculate_ctf_2d. Default None.
 
     Returns
     -------
@@ -1344,6 +1421,10 @@ def estimate_defocus_2d(
             phase_shift_model=phase_shift_model,
             initial_phase_shift=initial_phase_shift,
             phase_shift_lr=phase_shift_lr,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            laser_params=laser_params,
         )
     return estimate_defocus_2d_linear(
         patch_power_spectra=patch_power_spectra,
@@ -1370,4 +1451,8 @@ def estimate_defocus_2d(
         phase_shift_model=phase_shift_model,
         initial_phase_shift=initial_phase_shift,
         phase_shift_lr=phase_shift_lr,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast_fraction=amplitude_contrast_fraction,
+        laser_params=laser_params,
     )

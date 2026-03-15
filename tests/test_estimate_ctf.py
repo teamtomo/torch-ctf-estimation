@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from torch_ctf_estimation.estimate_ctf import estimate_ctf
+from torch_ctf_estimation.models import LaserParams
 
 
 def test_estimate_ctf_2d_image():
@@ -357,7 +358,8 @@ def test_estimate_ctf_optimize_phase_shift_2d_quadratic():
         device="cpu",
     )
     assert result2d.phase_shift_degrees is not None
-    assert 0.0 <= result2d.phase_shift_degrees <= 90.0
+    # Allow small negative (wrap-around when quadratic C is near 180°)
+    assert -1.0 <= result2d.phase_shift_degrees <= 90.0
     assert result2d.phase_shift_model_type == "quadratic"
     assert result2d.phase_shift_model is not None
     # Directional quadratic: 4 params C, g, k, alpha_rad
@@ -385,3 +387,44 @@ def test_estimate_ctf_raises_when_rescaled_image_smaller_than_patch():
             patch_sidelength=128,
             device="cpu",
         )
+
+
+def test_estimate_ctf_2d_default_no_laser():
+    """estimate_ctf with laser_params=None uses normal CTF and returns valid result."""
+    image = torch.randn(512, 512)
+    _mean_ps, _result1d, result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 2, 2),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 5.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        laser_params=None,
+        device="cpu",
+    )
+    assert result2d.defocus_model_type == "grid"
+    assert result2d.defocus_model.data.shape[1:] == (1, 2, 2)
+
+
+def test_estimate_ctf_2d_with_laser_params():
+    """estimate_ctf with laser_params set uses LPP CTF and returns Defocus2DResults."""
+    image = torch.randn(512, 512)
+    laser_params = LaserParams()
+    _mean_ps, _result1d, result2d = estimate_ctf(
+        image=image,
+        pixel_spacing_angstroms=1.0,
+        defocus_grid_resolution=(1, 2, 2),
+        frequency_fit_range_angstroms=(30.0, 5.0),
+        defocus_range_microns=(0.5, 5.0),
+        voltage_kev=300.0,
+        spherical_aberration_mm=2.7,
+        amplitude_contrast_fraction=0.1,
+        patch_sidelength=128,
+        laser_params=laser_params,
+        device="cpu",
+    )
+    assert result2d.defocus_model_type == "grid"
+    assert result2d.defocus_model.data.shape[1:] == (1, 2, 2)

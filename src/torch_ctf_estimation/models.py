@@ -94,6 +94,48 @@ class QuadraticPhaseShiftModel(BaseModel):
     alpha_rad: float  # orientation of variation (radians); u = (cos(alpha), sin(alpha))
 
 
+class LaserParams(BaseModel):
+    """Laser phase plate parameters for optics groups using a laser phase plate.
+
+    Default enabled is False (omit or set laser_params to null when not used).
+    Include this block only when the optics group uses a laser phase plate.
+
+    Attributes
+    ----------
+    NA : float
+        Numerical aperture.
+    laser_wavelength_angstrom : float
+        Laser wavelength in Angstrom.
+    focal_length_angstrom : float
+        Focal length in Angstrom.
+    laser_xy_angle_deg : float
+        Laser angle in the XY plane in degrees.
+    laser_xz_angle_deg : float
+        Laser angle in the XZ plane in degrees.
+    laser_long_offset_angstrom : float
+        Longitudinal offset in Angstrom.
+    laser_trans_offset_angstrom : float
+        Transverse offset in Angstrom.
+    laser_polarization_angle_deg : float
+        Laser polarization angle in degrees.
+    peak_phase_deg : float
+        Peak phase in degrees.
+    dual_laser : bool
+        Whether a dual-laser setup is used. Default is False.
+    """
+
+    NA: float = 0.055
+    laser_wavelength_angstrom: float = 10640.0
+    focal_length_angstrom: float = 7.1e7
+    laser_xy_angle_deg: float = 0.0
+    laser_xz_angle_deg: float = 0.0
+    laser_long_offset_angstrom: float = 0.0
+    laser_trans_offset_angstrom: float = 0.0
+    laser_polarization_angle_deg: float = 90.0
+    peak_phase_deg: float = 45.0
+    dual_laser: bool = True
+
+
 class Defocus1DResults(BaseModel):
     """Results from 1D defocus estimation."""
 

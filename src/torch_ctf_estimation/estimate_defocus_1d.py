@@ -433,6 +433,7 @@ def refine_defocus_and_b_factor_1d(
     normalised_raps = raps_detached / torch.linalg.norm(raps_detached)
     spatial_freqs_fit = spatial_freqs[fit_mask].detach()
     defocus_low, defocus_high = defocus_range_microns
+    phase_shift_low, phase_shift_high = phase_shift_range
 
     defocus_param = torch.nn.Parameter(
         torch.tensor(initial_defocus, device=device, dtype=dtype)
@@ -514,6 +515,15 @@ def refine_defocus_and_b_factor_1d(
             loss = loss + PHASE_SHIFT_UNIT_CIRCLE_PENALTY * penalty
         loss.backward()
         optimiser.step()
+        if u_param is not None and v_param is not None:
+            with torch.no_grad():
+                phase_deg = (
+                    0.5 * torch.atan2(v_param, u_param) * (180.0 / math.pi)
+                ).item()
+                phase_deg = max(phase_shift_low, min(phase_shift_high, phase_deg))
+                theta_rad = phase_deg * (math.pi / 180.0)
+                u_param.data.fill_(math.cos(2.0 * theta_rad))
+                v_param.data.fill_(math.sin(2.0 * theta_rad))
 
     with torch.no_grad():
         defocus_param.clamp_(min=defocus_low, max=defocus_high)

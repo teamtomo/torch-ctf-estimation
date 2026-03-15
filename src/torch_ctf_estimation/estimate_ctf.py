@@ -19,7 +19,7 @@ from torch_ctf_estimation.estimate_defocus_2d import (
     estimate_defocus_2d,
     linear_tilt_axis_and_magnitude_deg,
 )
-from torch_ctf_estimation.models import LinearDefocusModel
+from torch_ctf_estimation.models import LaserParams, LinearDefocusModel
 from torch_ctf_estimation.utils.estimate_background_2d import estimate_background_2d
 from torch_ctf_estimation.utils.normalize import normalize_image
 
@@ -37,6 +37,10 @@ def _estimate_defocus_2d_at_1x1(
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast_fraction: float = 0.07,
+    laser_params: Optional[LaserParams] = None,
 ) -> Defocus2DResults:
     """
     Run 2D defocus estimation at 1x1 spatial resolution (center only).
@@ -68,6 +72,14 @@ def _estimate_defocus_2d_at_1x1(
         Phase shift model passed to estimate_defocus_2d. Default "grid".
     initial_phase_shift : float, optional
         Initial phase shift in degrees when optimizing. Default 0.0.
+    voltage_kev : float, optional
+        Acceleration voltage in keV for CTF simulation. Default 300.0.
+    spherical_aberration_mm : float, optional
+        Spherical aberration in mm for CTF simulation. Default 2.7.
+    amplitude_contrast_fraction : float, optional
+        Amplitude contrast fraction (0-1) for CTF simulation. Default 0.07.
+    laser_params : Optional[LaserParams], optional
+        If set, use LPP CTF model for 2D fit; if None, use standard CTF. Default None.
 
     Returns
     -------
@@ -109,6 +121,10 @@ def _estimate_defocus_2d_at_1x1(
         optimize_phase_shift=optimize_phase_shift,
         phase_shift_model=phase_shift_model,
         initial_phase_shift=initial_phase_shift,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast_fraction=amplitude_contrast_fraction,
+        laser_params=laser_params,
     )
 
 
@@ -274,9 +290,9 @@ def estimate_ctf(
     defocus_grid_resolution: tuple[int, int, int],  # (t, h, w); linear uses nt only
     frequency_fit_range_angstroms: tuple[float, float],  # (low, high)
     defocus_range_microns: tuple[float, float],  # (low, high)
-    voltage_kev: float,
-    spherical_aberration_mm: float,
-    amplitude_contrast_fraction: float,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast_fraction: float = 0.07,
     patch_sidelength: int = 256,
     device: torch.device = None,
     debug: bool = False,
@@ -293,6 +309,7 @@ def estimate_ctf(
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
     initial_phase_shift: float = 0.0,
+    laser_params: Optional[LaserParams] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Estimate CTF from a 2D or 3D image.
@@ -361,6 +378,9 @@ def estimate_ctf(
         Used only when optimize_phase_shift is True. Default "grid".
     initial_phase_shift: float, optional
         Initial phase shift in degrees when optimizing. Default 0.0.
+    laser_params: Optional[LaserParams], optional
+        If set, use LPP (laser phase plate) CTF model for 2D estimation;
+        if None (default), use standard calculate_ctf_2d.
 
     Returns
     -------
@@ -518,6 +538,10 @@ def estimate_ctf(
             optimize_phase_shift=optimize_phase_shift,
             phase_shift_model=phase_shift_model,
             initial_phase_shift=initial_phase_shift_2d,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            laser_params=laser_params,
         )
         result2d = _defocus_field_from_1d_fits(
             patch_power_spectra=patch_ps,
@@ -580,6 +604,10 @@ def estimate_ctf(
             optimize_phase_shift=optimize_phase_shift,
             phase_shift_model=phase_shift_model,
             initial_phase_shift=initial_phase_shift_2d,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast_fraction=amplitude_contrast_fraction,
+            laser_params=laser_params,
         )
         fix_defocus_0_val = float(result_1x1.defocus_model.data.mean().cpu().item())
         if result_1x1.astigmatism is not None:
@@ -607,6 +635,10 @@ def estimate_ctf(
         optimize_phase_shift=optimize_phase_shift,
         phase_shift_model=phase_shift_model,
         initial_phase_shift=initial_phase_shift_for_2d,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast_fraction=amplitude_contrast_fraction,
+        laser_params=laser_params,
     )
     if result2d.defocus_model_type == "linear":
         axis_deg, tilt_deg = linear_tilt_axis_and_magnitude_deg(
