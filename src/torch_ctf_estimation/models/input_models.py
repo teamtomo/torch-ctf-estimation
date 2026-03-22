@@ -36,6 +36,7 @@ class CTFFittingParams(BaseModel):
     initial_envelope_B: float | None = None
     optimize_phase_shift: bool = False
     phase_shift_model: Literal["grid", "quadratic"] = "grid"
+    phase_shift_quadratic_perpendicular_axis: bool = False
     initial_phase_shift: float = 0.0
 
 

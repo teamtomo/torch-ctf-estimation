@@ -63,6 +63,7 @@ def _setup_grid_defocus_and_phase(
     optimize_phase_shift: bool,
     phase_shift_model: Literal["grid", "quadratic"],
     initial_phase_shift: float,
+    phase_shift_quadratic_perpendicular_axis: bool = False,
 ) -> tuple[CubicCatmullRomGrid3d, Optional[PhaseShiftModels]]:
     """
     Create the 3D defocus spline grid and optional phase shift models.
@@ -81,6 +82,7 @@ def _setup_grid_defocus_and_phase(
         initial_phase_shift=initial_phase_shift,
         grid_resolution=defocus_grid_resolution,
         device=device,
+        phase_shift_quadratic_perpendicular_axis=phase_shift_quadratic_perpendicular_axis,
     )
     return defocus_model_obj, phase_models
 
@@ -160,6 +162,7 @@ def estimate_defocus_2d_grid(
     debug: bool = False,
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    phase_shift_quadratic_perpendicular_axis: bool = False,
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
     voltage_kev: float = 300.0,
@@ -186,6 +189,7 @@ def estimate_defocus_2d_grid(
         optimize_phase_shift,
         phase_shift_model,
         initial_phase_shift,
+        phase_shift_quadratic_perpendicular_axis,
     )
 
     # --- Bandpass, astigmatism params, envelope (shared with linear) ---

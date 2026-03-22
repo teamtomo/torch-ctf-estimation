@@ -293,11 +293,46 @@ def test_estimate_ctf_optimize_phase_shift_2d_quadratic():
     assert -1.0 <= result2d.phase_shift_degrees <= 90.0
     assert result2d.phase_shift_model_type == "quadratic"
     assert result2d.phase_shift_model is not None
-    # Directional quadratic: 4 params C, g, k, alpha_rad
+    # Quadratic: C, alpha_rad, g1, k1, g2, k2 (g2,k2 fixed at 0 when perpendicular off)
     assert hasattr(result2d.phase_shift_model, "C")
-    assert hasattr(result2d.phase_shift_model, "g")
-    assert hasattr(result2d.phase_shift_model, "k")
     assert hasattr(result2d.phase_shift_model, "alpha_rad")
+    assert hasattr(result2d.phase_shift_model, "g1")
+    assert hasattr(result2d.phase_shift_model, "k1")
+    assert hasattr(result2d.phase_shift_model, "g2")
+    assert hasattr(result2d.phase_shift_model, "k2")
+    assert result2d.phase_shift_model.g2 == 0.0
+    assert result2d.phase_shift_model.k2 == 0.0
+
+
+def test_init_phase_shift_quadratic_perpendicular_axis_requires_grad():
+    """When phase_shift_quadratic_perpendicular_axis=True, g2 and k2 are trainable."""
+    from torch_ctf_estimation.estimate_ctf_2d.phase_shift_2d import (
+        init_phase_shift_models,
+    )
+
+    m_on = init_phase_shift_models(
+        optimize_phase_shift=True,
+        phase_shift_model="quadratic",
+        initial_phase_shift=10.0,
+        grid_resolution=(1, 2, 2),
+        device=torch.device("cpu"),
+        phase_shift_quadratic_perpendicular_axis=True,
+    )
+    assert m_on is not None and m_on.quad_params is not None
+    assert m_on.quad_params["g2"].requires_grad is True
+    assert m_on.quad_params["k2"].requires_grad is True
+
+    m_off = init_phase_shift_models(
+        optimize_phase_shift=True,
+        phase_shift_model="quadratic",
+        initial_phase_shift=10.0,
+        grid_resolution=(1, 2, 2),
+        device=torch.device("cpu"),
+        phase_shift_quadratic_perpendicular_axis=False,
+    )
+    assert m_off is not None and m_off.quad_params is not None
+    assert m_off.quad_params["g2"].requires_grad is False
+    assert m_off.quad_params["k2"].requires_grad is False
 
 
 def test_estimate_ctf_raises_when_rescaled_image_smaller_than_patch():

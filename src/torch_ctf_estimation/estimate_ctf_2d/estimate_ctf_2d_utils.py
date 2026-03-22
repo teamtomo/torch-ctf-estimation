@@ -178,6 +178,7 @@ def _estimate_defocus_2d_at_1x1(
     debug: bool = False,
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    phase_shift_quadratic_perpendicular_axis: bool = False,
     initial_phase_shift: float = 0.0,
     voltage_kev: float = 300.0,
     spherical_aberration_mm: float = 2.7,
@@ -211,6 +212,8 @@ def _estimate_defocus_2d_at_1x1(
         Whether to estimate phase shift in the 2D fit. Default False.
     phase_shift_model : {"grid", "quadratic"}, optional
         Phase shift model passed to estimate_defocus_2d_grid. Default "grid".
+    phase_shift_quadratic_perpendicular_axis : bool, optional
+        If True and quadratic phase model, fit perpendicular-axis g2, k2. Default False.
     initial_phase_shift : float, optional
         Initial phase shift in degrees when optimizing. Default 0.0.
     voltage_kev : float, optional
@@ -264,6 +267,7 @@ def _estimate_defocus_2d_at_1x1(
         debug=debug,
         optimize_phase_shift=optimize_phase_shift,
         phase_shift_model=phase_shift_model,
+        phase_shift_quadratic_perpendicular_axis=phase_shift_quadratic_perpendicular_axis,
         initial_phase_shift=initial_phase_shift,
         voltage_kev=voltage_kev,
         spherical_aberration_mm=spherical_aberration_mm,

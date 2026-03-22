@@ -467,6 +467,7 @@ def estimate_defocus_2d_linear(
     debug: bool = False,
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    phase_shift_quadratic_perpendicular_axis: bool = False,
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
     voltage_kev: float = 300.0,
@@ -503,6 +504,7 @@ def estimate_defocus_2d_linear(
         initial_phase_shift=initial_phase_shift,
         grid_resolution=defocus_grid_resolution,
         device=device,
+        phase_shift_quadratic_perpendicular_axis=phase_shift_quadratic_perpendicular_axis,
     )
 
     # --- Bandpass, astigmatism, envelope (shared with grid) ---

@@ -113,17 +113,20 @@ class LinearDefocusModel(BaseModel):
 
 class QuadraticPhaseShiftModel(BaseModel):
     """
-    Directional quadratic phase shift: f(x,y) = C + g*s + k*s^2.
+    Quadratic phase shift f(x,y) = C + g1*s + k1*s^2 + g2*t + k2*t^2.
 
-    s = x*cos(alpha) + y*sin(alpha). (x,y) in [-1,1]. 4 parameters: C, g, k, alpha_rad.
+    s = x*cos(alpha) + y*sin(alpha), t = -x*sin(alpha) + y*cos(alpha). (x,y) in [-1,1].
+    Six parameters: C, alpha_rad, g1, k1, g2, k2.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    C: float  # mean phase shift (degrees)
-    g: float  # linear slope along direction
-    k: float  # curvature along direction
-    alpha_rad: float  # orientation of variation (radians); u = (cos(alpha), sin(alpha))
+    C: float  # mean phase shift at origin (degrees)
+    alpha_rad: float  # orientation of s-axis (radians)
+    g1: float  # linear term along s
+    k1: float  # quadratic term along s
+    g2: float  # linear term along t (perpendicular)
+    k2: float  # quadratic term along t
 
 
 class Defocus2DResults(BaseModel):

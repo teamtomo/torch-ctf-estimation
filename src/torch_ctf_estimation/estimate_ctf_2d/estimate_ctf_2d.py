@@ -37,6 +37,7 @@ def estimate_ctf_2d(
     debug: bool = False,
     optimize_phase_shift: bool = False,
     phase_shift_model: Literal["grid", "quadratic"] = "grid",
+    phase_shift_quadratic_perpendicular_axis: bool = False,
     initial_phase_shift: float = 0.0,
     phase_shift_lr: float = 5.0,
     voltage_kev: float = 300.0,
@@ -104,6 +105,9 @@ def estimate_ctf_2d(
         Whether to estimate phase shift (0-180 deg) alongside defocus. Default False.
     phase_shift_model : {"grid", "quadratic"}, optional
         "grid" (per-patch) or "quadratic" (directional). Default "grid".
+    phase_shift_quadratic_perpendicular_axis : bool, optional
+        If True and ``phase_shift_model`` is "quadratic", fit g2, k2 along t
+        perpendicular to s. Default False.
     initial_phase_shift : float, optional
         Initial phase shift in degrees when optimizing. Default 0.0.
     phase_shift_lr : float, optional
@@ -142,6 +146,7 @@ def estimate_ctf_2d(
             debug=debug,
             optimize_phase_shift=optimize_phase_shift,
             phase_shift_model=phase_shift_model,
+            phase_shift_quadratic_perpendicular_axis=phase_shift_quadratic_perpendicular_axis,
             initial_phase_shift=initial_phase_shift,
             phase_shift_lr=phase_shift_lr,
             voltage_kev=voltage_kev,
@@ -172,6 +177,7 @@ def estimate_ctf_2d(
         debug=debug,
         optimize_phase_shift=optimize_phase_shift,
         phase_shift_model=phase_shift_model,
+        phase_shift_quadratic_perpendicular_axis=phase_shift_quadratic_perpendicular_axis,
         initial_phase_shift=initial_phase_shift,
         phase_shift_lr=phase_shift_lr,
         voltage_kev=voltage_kev,

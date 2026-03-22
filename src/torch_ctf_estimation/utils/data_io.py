@@ -128,7 +128,12 @@ def results_to_output_model(result2d: Defocus2DResults) -> CTFResultsOutput:
             if isinstance(result2d.phase_shift_model, QuadraticPhaseShiftModel):
                 q = result2d.phase_shift_model
                 quad = PhaseShiftQuadraticOutput(
-                    C=q.C, g=q.g, k=q.k, alpha_rad=q.alpha_rad
+                    C=q.C,
+                    alpha_rad=q.alpha_rad,
+                    g1=q.g1,
+                    k1=q.k1,
+                    g2=q.g2,
+                    k2=q.k2,
                 )
             elif (
                 isinstance(result2d.phase_shift_model, tuple)

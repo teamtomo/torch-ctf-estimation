@@ -40,12 +40,14 @@ class DefocusResultsOutput(BaseModelTeamTomo):
 
 
 class PhaseShiftQuadraticOutput(BaseModelTeamTomo):
-    """Quadratic phase shift coefficients."""
+    """Quadratic phase shift coefficients (s,t) with perpendicular axis."""
 
     C: float
-    g: float
-    k: float
     alpha_rad: float
+    g1: float
+    k1: float
+    g2: float
+    k2: float
 
 
 class PhaseShiftGridOutput(BaseModelTeamTomo):

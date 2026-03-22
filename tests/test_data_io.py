@@ -94,9 +94,11 @@ def test_results_to_output_model_phase_shift_quadratic():
     assert output.phase_shift_params.quadratic is not None
     assert output.phase_shift_params.grid is None
     assert hasattr(output.phase_shift_params.quadratic, "C")
-    assert hasattr(output.phase_shift_params.quadratic, "g")
-    assert hasattr(output.phase_shift_params.quadratic, "k")
     assert hasattr(output.phase_shift_params.quadratic, "alpha_rad")
+    assert hasattr(output.phase_shift_params.quadratic, "g1")
+    assert hasattr(output.phase_shift_params.quadratic, "k1")
+    assert hasattr(output.phase_shift_params.quadratic, "g2")
+    assert hasattr(output.phase_shift_params.quadratic, "k2")
 
 
 def test_results_to_output_model_phase_shift_grid():
