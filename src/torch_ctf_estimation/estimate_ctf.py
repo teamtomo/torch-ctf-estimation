@@ -276,6 +276,9 @@ def estimate_ctf(
             background_result=bg_mean,
             device=patch_ps.device,
             optimize_phase_shift=fitting_params.optimize_phase_shift,
+            use_equiphase_for_1d_spatial=fitting_params.use_equiphase_for_1d_spatial,
+            laser_params=laser_params,
+            equiphase_n_theta=fitting_params.equiphase_n_theta,
         )
         # For linear defocus: compute tilt axis and magnitude (degrees) for reporting
         if result2d.defocus_model_type == "linear":

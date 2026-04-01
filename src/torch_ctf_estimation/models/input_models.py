@@ -27,6 +27,8 @@ class CTFFittingParams(BaseModel):
     optimize_astigmatism: bool = True
     defocus_model: Literal["grid", "linear"] = "grid"
     use_1d_defocus_for_spatial: bool = False
+    use_equiphase_for_1d_spatial: bool = True
+    equiphase_n_theta: int = 64
     linear_fix_defocus_0_from_1x1: bool = False
     refine_steps_1d: int = 40
     n_iterations_2d: int = 100

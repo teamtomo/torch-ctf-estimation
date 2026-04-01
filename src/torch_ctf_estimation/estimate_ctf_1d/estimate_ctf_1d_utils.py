@@ -1,7 +1,7 @@
 """Utility functions for 1D CTF estimation (background fit, grid search, refinement)."""
 
 import math
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import einops
 import torch
@@ -13,10 +13,70 @@ from torch_grid_utils.fftfreq_grid import (
     spatial_frequency_to_fftfreq,
 )
 
+from torch_ctf_estimation.estimate_ctf_1d.equiphase_ctf_1d import (
+    equiphase_average_power_to_1d_rfft,
+)
 from torch_ctf_estimation.models.results_models import (
     _Background1DResult,
     _GridSearch1DResult,
 )
+
+if TYPE_CHECKING:
+    from torch_ctf_estimation.models import LaserParams
+
+
+def _average_power_to_1d_rfft(
+    power_spectrum: torch.Tensor,
+    image_sidelength: int,
+    *,
+    use_equiphase: bool,
+    equiphase_defocus_um: float | None,
+    equiphase_astigmatism_um: float | None,
+    equiphase_astigmatism_angle_deg: float | None,
+    equiphase_phase_shift_deg: float | None,
+    voltage_kev: float,
+    spherical_aberration_mm: float,
+    amplitude_contrast: float,
+    pixel_spacing_angstroms: float,
+    laser_params: Optional["LaserParams"],
+    equiphase_n_theta: int,
+) -> torch.Tensor:
+    """Rotational or equiphase 1D profile (same length as rfftfreq bins)."""
+    h, w = image_sidelength, image_sidelength
+    if not use_equiphase:
+        ps_cpu = power_spectrum.cpu()
+        averaged, _ = rotational_average_dft_2d(
+            ps_cpu,
+            image_shape=(h, w),
+            rfft=True,
+            fftshifted=False,
+        )
+        return averaged.to(power_spectrum.device)
+    if (
+        equiphase_defocus_um is None
+        or equiphase_astigmatism_um is None
+        or equiphase_astigmatism_angle_deg is None
+        or equiphase_phase_shift_deg is None
+    ):
+        raise ValueError(
+            "use_equiphase=True requires equiphase_defocus_um, "
+            "equiphase_astigmatism_um, equiphase_astigmatism_angle_deg, "
+            "and equiphase_phase_shift_deg."
+        )
+    return equiphase_average_power_to_1d_rfft(
+        power_spectrum,
+        image_sidelength,
+        pixel_spacing_angstroms,
+        defocus_um=equiphase_defocus_um,
+        astigmatism_um=equiphase_astigmatism_um,
+        astigmatism_angle_deg=equiphase_astigmatism_angle_deg,
+        phase_shift_deg=equiphase_phase_shift_deg,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast=amplitude_contrast,
+        laser_params=laser_params,
+        n_theta=equiphase_n_theta,
+    )
 
 
 def get_background_result(
@@ -25,6 +85,17 @@ def get_background_result(
     frequency_fit_range_angstroms: tuple[float, float],
     pixel_spacing_angstroms: float,
     background_result: _Background1DResult | None = None,
+    *,
+    use_equiphase: bool = False,
+    equiphase_defocus_um: float | None = None,
+    equiphase_astigmatism_um: float | None = None,
+    equiphase_astigmatism_angle_deg: float | None = None,
+    equiphase_phase_shift_deg: float | None = None,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast: float = 0.07,
+    laser_params: Optional["LaserParams"] = None,
+    equiphase_n_theta: int = 64,
 ) -> _Background1DResult:
     """
     Get background-subtracted 1D spectrum: reuse pre-fitted or fit new spline.
@@ -45,6 +116,26 @@ def get_background_result(
         Isotropic pixel spacing in angstroms.
     background_result : _Background1DResult, optional
         If provided, reuse this pre-fitted background instead of fitting.
+    use_equiphase : bool
+        If True, equiphase shell average; else rotational average.
+    equiphase_defocus_um : float, optional
+        Mean defocus (µm) for equiphase when use_equiphase is True.
+    equiphase_astigmatism_um : float, optional
+        Astigmatism (µm) for equiphase.
+    equiphase_astigmatism_angle_deg : float, optional
+        Astigmatism angle (degrees) for equiphase.
+    equiphase_phase_shift_deg : float, optional
+        Phase shift (degrees) for equiphase.
+    voltage_kev : float
+        Acceleration voltage for equiphase optics. Default 300.0.
+    spherical_aberration_mm : float
+        Spherical aberration (mm) for equiphase. Default 2.7.
+    amplitude_contrast : float
+        Amplitude contrast for equiphase. Default 0.07.
+    laser_params : LaserParams, optional
+        Optional laser preset for LPP phase in equiphase chi.
+    equiphase_n_theta : int
+        Azimuth samples per shell for equiphase. Default 64.
 
     Returns
     -------
@@ -52,18 +143,22 @@ def get_background_result(
         Background model and background-subtracted raps in fit range.
     """
     if background_result is not None:
-        # Reuse path: rotationally average this spectrum, subtract pre-fitted background
+        # Reuse path: rotationally or equiphase average, subtract pre-fitted background
         device = power_spectrum.device
-        h, w = image_sidelength, image_sidelength
-        ps_cpu = power_spectrum.cpu()
-        rotationally_averaged_power_spectrum, _ = rotational_average_dft_2d(
-            ps_cpu,
-            image_shape=(h, w),
-            rfft=True,
-            fftshifted=False,
-        )
-        rotationally_averaged_power_spectrum = rotationally_averaged_power_spectrum.to(
-            device
+        rotationally_averaged_power_spectrum = _average_power_to_1d_rfft(
+            power_spectrum,
+            image_sidelength,
+            use_equiphase=use_equiphase,
+            equiphase_defocus_um=equiphase_defocus_um,
+            equiphase_astigmatism_um=equiphase_astigmatism_um,
+            equiphase_astigmatism_angle_deg=equiphase_astigmatism_angle_deg,
+            equiphase_phase_shift_deg=equiphase_phase_shift_deg,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast=amplitude_contrast,
+            pixel_spacing_angstroms=pixel_spacing_angstroms,
+            laser_params=laser_params,
+            equiphase_n_theta=equiphase_n_theta,
         )
         fit_mask = background_result.fit_mask
         raps_in_fit_range = rotationally_averaged_power_spectrum[fit_mask].clone()
@@ -92,6 +187,16 @@ def get_background_result(
         image_sidelength=image_sidelength,
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
+        use_equiphase=use_equiphase,
+        equiphase_defocus_um=equiphase_defocus_um,
+        equiphase_astigmatism_um=equiphase_astigmatism_um,
+        equiphase_astigmatism_angle_deg=equiphase_astigmatism_angle_deg,
+        equiphase_phase_shift_deg=equiphase_phase_shift_deg,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast=amplitude_contrast,
+        laser_params=laser_params,
+        equiphase_n_theta=equiphase_n_theta,
     )
 
 
@@ -101,6 +206,17 @@ def fit_background_spline_1d(
     frequency_fit_range_angstroms: tuple[float, float],
     pixel_spacing_angstroms: float,
     n_spline_iterations: int = 200,
+    *,
+    use_equiphase: bool = False,
+    equiphase_defocus_um: float | None = None,
+    equiphase_astigmatism_um: float | None = None,
+    equiphase_astigmatism_angle_deg: float | None = None,
+    equiphase_phase_shift_deg: float | None = None,
+    voltage_kev: float = 300.0,
+    spherical_aberration_mm: float = 2.7,
+    amplitude_contrast: float = 0.07,
+    laser_params: Optional["LaserParams"] = None,
+    equiphase_n_theta: int = 64,
 ) -> _Background1DResult:
     """
     Fit a cubic B-spline background to the 1D rotationally averaged power spectrum.
@@ -119,6 +235,26 @@ def fit_background_spline_1d(
         Isotropic pixel spacing in angstroms.
     n_spline_iterations : int
         Number of Adam steps for spline fitting. Default 200.
+    use_equiphase : bool
+        If True, equiphase shell average; else rotational average.
+    equiphase_defocus_um : float, optional
+        Mean defocus (µm) for equiphase when use_equiphase is True.
+    equiphase_astigmatism_um : float, optional
+        Astigmatism (µm) for equiphase.
+    equiphase_astigmatism_angle_deg : float, optional
+        Astigmatism angle (degrees) for equiphase.
+    equiphase_phase_shift_deg : float, optional
+        Phase shift (degrees) for equiphase.
+    voltage_kev : float
+        Acceleration voltage for equiphase optics. Default 300.0.
+    spherical_aberration_mm : float
+        Spherical aberration (mm) for equiphase. Default 2.7.
+    amplitude_contrast : float
+        Amplitude contrast for equiphase. Default 0.07.
+    laser_params : LaserParams, optional
+        Optional laser preset for LPP phase in equiphase chi.
+    equiphase_n_theta : int
+        Azimuth samples per shell for equiphase. Default 64.
 
     Returns
     -------
@@ -126,22 +262,25 @@ def fit_background_spline_1d(
         Background model, background-subtracted raps in fit range, freqs, spatial_freqs,
         fit_mask, and full rotationally averaged power spectrum.
     """
-    # Rotationally average 2D power spectrum to 1D (dft_utils uses CPU; move back after)
     device = power_spectrum.device
-    h, w = image_sidelength, image_sidelength
-    ps_cpu = power_spectrum.cpu()
-    rotationally_averaged_power_spectrum, _ = rotational_average_dft_2d(
-        ps_cpu,
-        image_shape=(h, w),
-        rfft=True,
-        fftshifted=False,
-    )
-    rotationally_averaged_power_spectrum = rotationally_averaged_power_spectrum.to(
-        device
+    rotationally_averaged_power_spectrum = _average_power_to_1d_rfft(
+        power_spectrum,
+        image_sidelength,
+        use_equiphase=use_equiphase,
+        equiphase_defocus_um=equiphase_defocus_um,
+        equiphase_astigmatism_um=equiphase_astigmatism_um,
+        equiphase_astigmatism_angle_deg=equiphase_astigmatism_angle_deg,
+        equiphase_phase_shift_deg=equiphase_phase_shift_deg,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast=amplitude_contrast,
+        pixel_spacing_angstroms=pixel_spacing_angstroms,
+        laser_params=laser_params,
+        equiphase_n_theta=equiphase_n_theta,
     )
 
     # Build frequency grid and mask for fit range (angstroms -> fftfreq)
-    freqs = torch.fft.rfftfreq(h, device=device)
+    freqs = torch.fft.rfftfreq(image_sidelength, device=device)
     low_ang, high_ang = frequency_fit_range_angstroms
     low_fftfreq = spatial_frequency_to_fftfreq(
         1 / low_ang, spacing=pixel_spacing_angstroms

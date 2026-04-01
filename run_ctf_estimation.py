@@ -36,6 +36,9 @@ PHASE_SHIFT_MODEL = "grid"  # "grid" or "quadratic"
 
 DEBUG = False
 USE_1D_DEFOCUS_FOR_SPATIAL = False
+# When True, 1D spatial uses equiphase averaging by default (see CTFFittingParams).
+USE_EQUIPHASE_FOR_1D_SPATIAL = True
+EQUIPHASE_N_THETA = 64
 LINEAR_FIX_DEFOCUS_0_FROM_1X1 = False
 REFINE_STEPS_1D = 40
 N_ITERATIONS_2D = 100
@@ -70,6 +73,8 @@ def main() -> None:
         optimize_astigmatism=OPTIMIZE_ASTIGMATISM,
         defocus_model=DEFOCUS_MODEL,
         use_1d_defocus_for_spatial=USE_1D_DEFOCUS_FOR_SPATIAL,
+        use_equiphase_for_1d_spatial=USE_EQUIPHASE_FOR_1D_SPATIAL,
+        equiphase_n_theta=EQUIPHASE_N_THETA,
         linear_fix_defocus_0_from_1x1=LINEAR_FIX_DEFOCUS_0_FROM_1X1,
         refine_steps_1d=REFINE_STEPS_1D,
         n_iterations_2d=N_ITERATIONS_2D,

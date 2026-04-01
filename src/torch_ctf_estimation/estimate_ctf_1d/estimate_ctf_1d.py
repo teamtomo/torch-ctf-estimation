@@ -10,7 +10,7 @@ from torch_ctf_estimation.estimate_ctf_1d.estimate_ctf_1d_utils import (
     grid_search_defocus_and_envelope_1d,
     refine_defocus_and_b_factor_1d,
 )
-from torch_ctf_estimation.models import CTF, Defocus1DResults
+from torch_ctf_estimation.models import CTF, Defocus1DResults, LaserParams
 from torch_ctf_estimation.models.results_models import _Background1DResult
 
 
@@ -36,6 +36,13 @@ def estimate_ctf_1d(
     phase_shift_range: tuple[float, float] = (0.0, 180.0),
     phase_shift_step: float = 5.0,
     phase_shift_lr: float = 5.0,
+    use_equiphase: bool = False,
+    equiphase_defocus_um: float | None = None,
+    equiphase_astigmatism_um: float | None = None,
+    equiphase_astigmatism_angle_deg: float | None = None,
+    equiphase_phase_shift_deg: float | None = None,
+    laser_params: LaserParams | None = None,
+    equiphase_n_theta: int = 64,
 ) -> Defocus1DResults:
     """
     Estimate CTF in 1D from a power spectrum.
@@ -94,6 +101,20 @@ def estimate_ctf_1d(
         Phase shift grid step in degrees for grid search. Default 5.0.
     phase_shift_lr : float
         Learning rate for phase shift in refinement. Default 1.0.
+    use_equiphase : bool
+        If True, use equiphase shell average for 1D spectrum. Default False.
+    equiphase_defocus_um : float, optional
+        Mean defocus (µm) for equiphase when use_equiphase is True.
+    equiphase_astigmatism_um : float, optional
+        Astigmatism (µm) for equiphase.
+    equiphase_astigmatism_angle_deg : float, optional
+        Astigmatism angle (degrees) for equiphase.
+    equiphase_phase_shift_deg : float, optional
+        Phase shift (degrees) for equiphase.
+    laser_params : LaserParams, optional
+        Optional laser preset for LPP phase in equiphase chi.
+    equiphase_n_theta : int
+        Azimuth samples per shell for equiphase. Default 64.
 
     Returns
     -------
@@ -112,6 +133,16 @@ def estimate_ctf_1d(
         frequency_fit_range_angstroms=frequency_fit_range_angstroms,
         pixel_spacing_angstroms=pixel_spacing_angstroms,
         background_result=background_result,
+        use_equiphase=use_equiphase,
+        equiphase_defocus_um=equiphase_defocus_um,
+        equiphase_astigmatism_um=equiphase_astigmatism_um,
+        equiphase_astigmatism_angle_deg=equiphase_astigmatism_angle_deg,
+        equiphase_phase_shift_deg=equiphase_phase_shift_deg,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast=amplitude_contrast,
+        laser_params=laser_params,
+        equiphase_n_theta=equiphase_n_theta,
     )
 
     # -------------------------------------------------------------------------

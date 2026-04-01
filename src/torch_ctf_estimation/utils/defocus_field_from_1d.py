@@ -10,6 +10,7 @@ from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 from torch_ctf_estimation.estimate_ctf_1d import estimate_ctf_1d
 from torch_ctf_estimation.models import (
     Defocus2DResults,
+    LaserParams,
     LinearDefocusModel,
 )
 
@@ -35,6 +36,9 @@ def _defocus_field_from_1d_fits(
     background_result: Optional[Any],
     device: torch.device,
     optimize_phase_shift: bool = False,
+    use_equiphase_for_1d_spatial: bool = False,
+    laser_params: LaserParams | None = None,
+    equiphase_n_theta: int = 64,
 ) -> Defocus2DResults:
     """
     Build defocus field from per-patch 1D fits; fit grid or linear to those values.
@@ -49,6 +53,12 @@ def _defocus_field_from_1d_fits(
     initial_phase_from_1x1 = 0.0
     if result_1x1.phase_shift_degrees is not None:
         initial_phase_from_1x1 = result_1x1.phase_shift_degrees
+    if isinstance(initial_phase_from_1x1, torch.Tensor):
+        equiphase_phase_shift = float(initial_phase_from_1x1.cpu().item())
+    else:
+        equiphase_phase_shift = float(initial_phase_from_1x1)
+    astig_um = float(result_1x1.astigmatism or 0.0)
+    astig_angle = float(result_1x1.astigmatism_angle or 0.0)
     defocus_list = []
     for ti in range(t):
         for gi in range(gh):
@@ -71,6 +81,13 @@ def _defocus_field_from_1d_fits(
                     background_result=background_result,
                     optimize_phase_shift=optimize_phase_shift,
                     initial_phase_shift=initial_phase_from_1x1,
+                    use_equiphase=use_equiphase_for_1d_spatial,
+                    equiphase_defocus_um=defocus_2d_center,
+                    equiphase_astigmatism_um=astig_um,
+                    equiphase_astigmatism_angle_deg=astig_angle,
+                    equiphase_phase_shift_deg=equiphase_phase_shift,
+                    laser_params=laser_params,
+                    equiphase_n_theta=equiphase_n_theta,
                 )
                 d = r1d.ctf_model.defocus_um
                 if isinstance(d, torch.Tensor):

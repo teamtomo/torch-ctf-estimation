@@ -151,6 +151,7 @@ def test_estimate_ctf_use_1d_defocus_for_spatial():
     fitting = default_fitting_params(
         defocus_grid_resolution=(1, 2, 2),
         use_1d_defocus_for_spatial=True,
+        use_equiphase_for_1d_spatial=False,
         defocus_model="grid",
     )
     _mean_ps, _result1d, result2d = estimate_ctf(
@@ -169,6 +170,7 @@ def test_estimate_ctf_use_1d_defocus_for_spatial_linear():
     fitting = default_fitting_params(
         defocus_grid_resolution=(1, 2, 2),
         use_1d_defocus_for_spatial=True,
+        use_equiphase_for_1d_spatial=False,
         defocus_model="linear",
     )
     _mean_ps, _result1d, result2d = estimate_ctf(

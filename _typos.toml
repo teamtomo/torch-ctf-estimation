@@ -1,0 +1,5 @@
+# Local spell-check config for https://github.com/crate-ci/typos (pre-commit).
+# "iy" here is i/y grid indexing (e.g. _iy_float_from_ky), not the word "it".
+
+[default.extend-words]
+iy = "iy"
