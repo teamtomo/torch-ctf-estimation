@@ -155,6 +155,7 @@ def _defocus_field_from_1d_fits(
         return Defocus2DResults(
             defocus_model_type="linear",
             defocus_model=linear_model,
+            patch_power_spectra=patch_power_spectra,
             astigmatism=astig,
             astigmatism_angle=result_1x1.astigmatism_angle or 0.0,
             envelope_B=envelope_B,
@@ -179,6 +180,7 @@ def _defocus_field_from_1d_fits(
     return Defocus2DResults(
         defocus_model_type="grid",
         defocus_model=grid_model,
+        patch_power_spectra=patch_power_spectra,
         astigmatism=astig,
         astigmatism_angle=result_1x1.astigmatism_angle or 0.0,
         envelope_B=envelope_B,

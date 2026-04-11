@@ -1,4 +1,4 @@
-"""Contrast transfer function estimation for cryo-EM images in PyTorch"""
+"""Contrast transfer function estimation for cryo-EM images in PyTorch."""
 
 from importlib.metadata import PackageNotFoundError, version
 
