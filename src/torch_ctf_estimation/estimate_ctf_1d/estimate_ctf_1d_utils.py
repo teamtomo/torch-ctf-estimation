@@ -16,10 +16,58 @@ from torch_grid_utils.fftfreq_grid import (
 from torch_ctf_estimation.estimate_ctf_1d.equiphase_ctf_1d import (
     equiphase_average_power_to_1d_rfft,
 )
+from torch_ctf_estimation.metrics.fit_metrics import l2_normalized_cross_correlation
 from torch_ctf_estimation.models.results_models import (
     _Background1DResult,
     _GridSearch1DResult,
 )
+
+
+def compute_final_1d_l2_cross_correlation(
+    raps_in_fit_range: torch.Tensor,
+    spatial_freqs: torch.Tensor,
+    fit_mask: torch.Tensor,
+    image_sidelength: int,
+    defocus_um: float,
+    *,
+    envelope_B: float | None,
+    phase_shift_deg: float,
+    voltage_kev: float,
+    spherical_aberration_mm: float,
+    amplitude_contrast: float,
+    pixel_spacing_angstroms: float,
+) -> float:
+    """
+    L2 NCC between background-subtracted 1D power and CTF^2 times envelope.
+
+    Matches the objective used in grid search / refinement on the fit band.
+    """
+    h = image_sidelength
+    device = raps_in_fit_range.device
+    dtype = raps_in_fit_range.dtype
+    d = torch.tensor(defocus_um, device=device, dtype=dtype).unsqueeze(0)
+    ctf2 = (
+        calculate_ctf_1d(
+            defocus=d,
+            voltage=voltage_kev,
+            spherical_aberration=spherical_aberration_mm,
+            amplitude_contrast=amplitude_contrast,
+            phase_shift=phase_shift_deg,
+            pixel_size=pixel_spacing_angstroms,
+            n_samples=h // 2 + 1,
+            oversampling_factor=3,
+        )
+        ** 2
+    )
+    ctf2_fit = ctf2.squeeze(0)[fit_mask]
+    spatial_freqs_fit = spatial_freqs[fit_mask]
+    if envelope_B is not None:
+        envelope = torch.exp(-(envelope_B * spatial_freqs_fit**2) / 2.0)
+        model_fit = ctf2_fit * envelope
+    else:
+        model_fit = ctf2_fit
+    return l2_normalized_cross_correlation(raps_in_fit_range, model_fit)
+
 
 if TYPE_CHECKING:
     from torch_ctf_estimation.models import LaserParams

@@ -153,6 +153,11 @@ def test_write_results_json_and_read_results_json():
         assert "defocus_results" in data
         assert "phase_shift_params" in data
         assert "envelope_B" in data
+        assert "cross_correlation_final" in data
+        assert data["cross_correlation_final"] is None or isinstance(
+            data["cross_correlation_final"],
+            (int, float),
+        )
         assert data["defocus_results"]["defocus_model_type"] in ("grid", "linear")
         assert "defocus_u" in data["defocus_results"]
         assert "defocus_v" in data["defocus_results"]

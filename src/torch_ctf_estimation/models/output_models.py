@@ -67,8 +67,14 @@ class PhaseShiftParamsOutput(BaseModelTeamTomo):
 
 
 class CTFResultsOutput(BaseModelTeamTomo):
-    """Top-level CTF estimation results for JSON export."""
+    """
+    Top-level CTF estimation results for JSON export.
+
+    cross_correlation_final, when set, is the mean Pearson r from the 2D fit
+    (heuristic reliability; not comparable to 1D L2 CC).
+    """
 
     defocus_results: DefocusResultsOutput
     phase_shift_params: PhaseShiftParamsOutput | None = None
     envelope_B: float | None = None
+    cross_correlation_final: float | None = None

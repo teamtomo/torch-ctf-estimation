@@ -6,6 +6,7 @@ import torch
 from torch_grid_utils.fftfreq_grid import fftfreq_to_spatial_frequency
 
 from torch_ctf_estimation.estimate_ctf_1d.estimate_ctf_1d_utils import (
+    compute_final_1d_l2_cross_correlation,
     get_background_result,
     grid_search_defocus_and_envelope_1d,
     refine_defocus_and_b_factor_1d,
@@ -180,7 +181,21 @@ def estimate_ctf_1d(
             if refined_phase_shift is not None
             else 0.0
         )
+        cc_final = compute_final_1d_l2_cross_correlation(
+            bg_result.raps_in_fit_range,
+            bg_result.spatial_freqs,
+            bg_result.fit_mask,
+            image_sidelength,
+            float(refined_defocus.detach().cpu().item()),
+            envelope_B=None,
+            phase_shift_deg=phase_deg,
+            voltage_kev=voltage_kev,
+            spherical_aberration_mm=spherical_aberration_mm,
+            amplitude_contrast=amplitude_contrast,
+            pixel_spacing_angstroms=pixel_spacing_angstroms,
+        )
         return Defocus1DResults(
+            cross_correlation_final=cc_final,
             frequencies_1d=fftfreq_to_spatial_frequency(
                 bg_result.freqs, pixel_spacing_angstroms
             ),
@@ -278,7 +293,24 @@ def estimate_ctf_1d(
         phase_deg = float(refined_phase_shift)
     # Fold to [0, 90]: symmetry theta <-> 180 - theta
     phase_deg = min(phase_deg, 180.0 - phase_deg)
+    b_for_cc: float | None = (
+        None if refined_B is None else float(refined_B.detach().cpu().item())
+    )
+    cc_final = compute_final_1d_l2_cross_correlation(
+        bg_result.raps_in_fit_range,
+        bg_result.spatial_freqs,
+        bg_result.fit_mask,
+        image_sidelength,
+        float(refined_defocus.detach().cpu().item()),
+        envelope_B=b_for_cc,
+        phase_shift_deg=phase_deg,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast=amplitude_contrast,
+        pixel_spacing_angstroms=pixel_spacing_angstroms,
+    )
     return Defocus1DResults(
+        cross_correlation_final=cc_final,
         frequencies_1d=fftfreq_to_spatial_frequency(
             bg_result.freqs, pixel_spacing_angstroms
         ),

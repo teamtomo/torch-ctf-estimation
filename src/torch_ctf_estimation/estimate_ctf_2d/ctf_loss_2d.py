@@ -1,11 +1,18 @@
 """CTF simulation and correlation loss for 2D defocus estimation."""
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import torch
 from torch_ctf import calc_LPP_ctf_2D, calculate_ctf_2d
 
-from torch_ctf_estimation.models import LaserParams
+from torch_ctf_estimation.metrics.fit_metrics import pearson_r_flat
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from torch_ctf_estimation.models import LaserParams
 
 # Penalty weight for unit-circle constraint on (u,v): lambda*(u^2+v^2-1)^2
 PHASE_SHIFT_UNIT_CIRCLE_PENALTY = 0.1
@@ -23,7 +30,7 @@ def compute_ctf2_t(
     amplitude_contrast_fraction: float,
     env_2d: torch.Tensor,
     bp_filter: torch.Tensor,
-    laser_params: Optional[LaserParams] = None,
+    laser_params: LaserParams | None = None,
 ) -> torch.Tensor:
     """
     Compute CTF^2 * env^2 * bp_filter for one frame (patch grid).
@@ -79,8 +86,8 @@ def compute_ctf2_t(
 def correlation_loss_t(
     simulated_ctf2s_t: torch.Tensor,
     patch_ps_t: torch.Tensor,
-    u_t: Optional[torch.Tensor] = None,
-    v_t: Optional[torch.Tensor] = None,
+    u_t: torch.Tensor | None = None,
+    v_t: torch.Tensor | None = None,
     phase_penalty_weight: float = PHASE_SHIFT_UNIT_CIRCLE_PENALTY,
 ) -> torch.Tensor:
     """
@@ -99,3 +106,60 @@ def correlation_loss_t(
         penalty_t = ((u_t**2 + v_t**2 - 1.0) ** 2).mean()
         loss_t = loss_t + phase_penalty_weight * penalty_t
     return loss_t
+
+
+def mean_pearson_r_final_2d(
+    patch_power_spectra: torch.Tensor,
+    forward_frame: Callable[[int], tuple[torch.Tensor, torch.Tensor]],
+    *,
+    astig_clamped: torch.Tensor,
+    astig_angle_clamped: torch.Tensor,
+    image_shape: tuple[int, int],
+    pixel_spacing_angstroms: float,
+    voltage_kev: float,
+    spherical_aberration_mm: float,
+    amplitude_contrast_fraction: float,
+    env_2d: torch.Tensor,
+    bp_filter: torch.Tensor,
+    laser_params: LaserParams | None = None,
+) -> float:
+    """
+    Mean Pearson r between patch power and simulated CTF² per time frame (no penalty).
+
+    ``forward_frame(t_idx)`` must return ``(predicted_defocus_t, phase_shift_t)`` for
+    that frame, matching the training forward pass.
+    """
+    t_frames = patch_power_spectra.shape[0]
+    rs: list[float] = []
+    with torch.no_grad():
+        for t_idx in range(t_frames):
+            patch_ps_t = patch_power_spectra[t_idx]
+            predicted_defocus_t, phase_shift_t = forward_frame(t_idx)
+            simulated_ctf2s_t = compute_ctf2_t(
+                defocus_t=predicted_defocus_t,
+                phase_shift_t=phase_shift_t,
+                astig_clamped=astig_clamped,
+                astig_angle_clamped=astig_angle_clamped,
+                image_shape=image_shape,
+                pixel_spacing_angstroms=pixel_spacing_angstroms,
+                voltage_kev=voltage_kev,
+                spherical_aberration_mm=spherical_aberration_mm,
+                amplitude_contrast_fraction=amplitude_contrast_fraction,
+                env_2d=env_2d,
+                bp_filter=bp_filter,
+                laser_params=laser_params,
+            )
+            if (
+                torch.isnan(simulated_ctf2s_t).any()
+                or torch.isinf(simulated_ctf2s_t).any()
+            ):
+                continue
+            rs.append(
+                pearson_r_flat(
+                    patch_ps_t.reshape(-1),
+                    simulated_ctf2s_t.reshape(-1),
+                )
+            )
+    if not rs:
+        return float("nan")
+    return float(sum(rs) / len(rs))

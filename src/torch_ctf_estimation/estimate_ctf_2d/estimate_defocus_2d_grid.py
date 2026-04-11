@@ -15,6 +15,7 @@ from torch_cubic_spline_grids import CubicCatmullRomGrid3d
 from torch_ctf_estimation.estimate_ctf_2d.ctf_loss_2d import (
     compute_ctf2_t,
     correlation_loss_t,
+    mean_pearson_r_final_2d,
 )
 from torch_ctf_estimation.estimate_ctf_2d.estimate_ctf_2d_utils import (
     _astig_angle_to_m90_p90,
@@ -383,8 +384,36 @@ def estimate_defocus_2d_grid(
         phase_models, phase_shift_model
     )
 
+    astig_clamped_final, astig_angle_clamped_final = _get_astig_clamped(
+        astigmatism, angle_u, angle_v, optimize_astigmatism
+    )
+
+    def _forward_frame_grid(t_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        positions_t = normalised_patch_positions[t_idx]
+        predicted_defocus_t = einops.rearrange(
+            defocus_model_obj(positions_t), "... 1 -> ..."
+        )
+        phase_shift_t, _, _ = phase_shift_at_positions(positions_t, phase_models)
+        return predicted_defocus_t, phase_shift_t
+
+    cc_final = mean_pearson_r_final_2d(
+        patch_power_spectra,
+        _forward_frame_grid,
+        astig_clamped=astig_clamped_final,
+        astig_angle_clamped=astig_angle_clamped_final,
+        image_shape=image_shape,
+        pixel_spacing_angstroms=pixel_spacing_angstroms,
+        voltage_kev=voltage_kev,
+        spherical_aberration_mm=spherical_aberration_mm,
+        amplitude_contrast_fraction=amplitude_contrast_fraction,
+        env_2d=env_2d,
+        bp_filter=bp_filter,
+        laser_params=laser_params,
+    )
+
     if debug:
         return Defocus2DResults(
+            cross_correlation_final=cc_final,
             defocus_model_type="grid",
             defocus_model=defocus_model_obj,
             simulated_ctf2s=simulated_ctf2s,
@@ -410,6 +439,7 @@ def estimate_defocus_2d_grid(
             phase_shift_trace=phase_shift_trace if optimize_phase_shift else None,
         )
     return Defocus2DResults(
+        cross_correlation_final=cc_final,
         defocus_model_type="grid",
         defocus_model=defocus_model_obj,
         astigmatism=final_astigmatism,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import torch
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from torch_cubic_spline_grids import CubicBSplineGrid1d, CubicCatmullRomGrid3d
 
 if TYPE_CHECKING:
@@ -134,6 +134,15 @@ class Defocus2DResults(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    cross_correlation_final: float | None = Field(
+        default=None,
+        description=(
+            "Mean Pearson r between patch power and simulated CTF^2 per time frame "
+            "at the final parameters (heuristic fit reliability). "
+            "Not comparable to 1D CC."
+        ),
+    )
+
     defocus_model_type: Literal["grid", "linear"] = "grid"
     defocus_model: CubicCatmullRomGrid3d | LinearDefocusModel
     patch_power_spectra: torch.Tensor | None = None
@@ -231,6 +240,15 @@ class Defocus1DResults(BaseModel):
     """Results from 1D defocus estimation."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    cross_correlation_final: float | None = Field(
+        default=None,
+        description=(
+            "L2 NCC (cosine similarity) of background-subtracted 1D power vs "
+            "CTF^2 times envelope on the fit band at final parameters "
+            "(same as 1D objective). Not comparable to 2D CC."
+        ),
+    )
 
     frequencies_1d: torch.Tensor
     powerspectrum_1d: torch.Tensor = None

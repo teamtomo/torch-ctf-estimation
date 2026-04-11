@@ -158,10 +158,13 @@ def results_to_output_model(result2d: Defocus2DResults) -> CTFResultsOutput:
     if result2d.envelope_B is not None:
         envelope_B = float(result2d.envelope_B)
 
+    cc_final = result2d.cross_correlation_final
+
     return CTFResultsOutput(
         defocus_results=defocus_results,
         phase_shift_params=phase_shift_params,
         envelope_B=envelope_B,
+        cross_correlation_final=cc_final,
     )
 
 
