@@ -20,6 +20,8 @@ from torch_ctf_estimation.models.results_models import (
     Defocus2DResults,
     LinearDefocusModel,
     QuadraticPhaseShiftModel,
+    Thickness1DResults,
+    Thickness2DResults,
     linear_tilt_axis_and_magnitude_deg,
 )
 
@@ -39,5 +41,7 @@ __all__ = [
     "PhaseShiftParamsOutput",
     "PhaseShiftQuadraticOutput",
     "QuadraticPhaseShiftModel",
+    "Thickness1DResults",
+    "Thickness2DResults",
     "linear_tilt_axis_and_magnitude_deg",
 ]

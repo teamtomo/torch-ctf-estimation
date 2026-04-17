@@ -41,7 +41,7 @@ def _dummy_result1d(*, defocus_um: float, device: torch.device) -> Defocus1DResu
 
 
 def test_uniform_defocus_m_equals_one_matches_naive_mean_2d():
-    """Zero defocus gradient: m=1 everywhere; tilt-corrected 2D mean equals naive mean."""
+    """Zero defocus gradient: m=1; tilt-corrected 2D mean equals naive mean."""
     torch.manual_seed(0)
     device = torch.device("cpu")
     h = 32
@@ -84,7 +84,7 @@ def test_uniform_defocus_m_equals_one_matches_naive_mean_2d():
 
 
 def test_uniform_defocus_1d_matches_reduction_of_naive_mean():
-    """Same setup: 1D path should match equiphase/rotational of the naive mean 2D spectrum."""
+    """Same setup: 1D path should match equiphase/rotational of the mean 2D spectrum."""
     torch.manual_seed(1)
     device = torch.device("cpu")
     h = 32
@@ -162,4 +162,3 @@ def test_tilt_corrected_1d_equiphase_smoke_with_astigmatism():
     assert ps_1d.ndim == 1
     assert ps_1d.shape[0] == h // 2 + 1
     assert torch.all(torch.isfinite(ps_1d))
-

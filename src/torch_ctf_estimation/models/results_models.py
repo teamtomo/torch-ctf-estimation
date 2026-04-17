@@ -236,6 +236,74 @@ def linear_tilt_axis_and_magnitude_deg(
     return (axis_deg, tilt_deg)
 
 
+class Thickness1DResults(BaseModel):
+    """Results from 1D thickness estimation."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    thickness_angstroms: float = Field(
+        description="Best-fit sample thickness in Angstroms."
+    )
+    cross_correlation_final: float | None = Field(
+        default=None,
+        description=(
+            "L2 NCC (cosine similarity) of background-subtracted 1D power vs "
+            "thickness-modulated power spectrum on the fit band at best thickness."
+        ),
+    )
+    frequencies_1d: torch.Tensor
+    powerspectrum_1d: torch.Tensor | None = None
+    background_model: CubicBSplineGrid1d | None = None
+    test_thicknesses: torch.Tensor | None = None
+    cross_correlations: torch.Tensor | None = None
+    low_frequency_fit: float | None = None
+    high_frequency_fit: float | None = None
+
+    @field_serializer("*", mode="wrap")  # type: ignore[misc]
+    def _serialize_field(
+        self, value: Any, handler: SerializerFunctionWrapHandler
+    ) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.tolist()
+        if isinstance(value, CubicBSplineGrid1d):
+            return value.to_dict()
+        return handler(value)
+
+
+class Thickness2DResults(BaseModel):
+    """Results from 2D thickness estimation (gradient descent on spline grid)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    mean_thickness: float = Field(
+        description="Mean thickness in Angstroms across the spline grid."
+    )
+    cross_correlation_final: float | None = Field(
+        default=None,
+        description=(
+            "Mean Pearson r between patch power and simulated thickness power spectrum "
+            "per time frame at the final parameters (heuristic fit reliability)."
+        ),
+    )
+    thickness_model: CubicCatmullRomGrid3d
+    patch_power_spectra: torch.Tensor | None = None
+    model_trace: list[torch.Tensor] | None = None
+    simulated_ps: torch.Tensor | None = None
+    envelope_B: float | None = None
+    envelope_B_trace: list[float] | None = None
+    loss_trace: list[float] | None = None
+
+    @field_serializer("*", mode="wrap")  # type: ignore[misc]
+    def _serialize_field(
+        self, value: Any, handler: SerializerFunctionWrapHandler
+    ) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.tolist()
+        if isinstance(value, CubicCatmullRomGrid3d):
+            return value.to_dict()
+        return handler(value)
+
+
 class Defocus1DResults(BaseModel):
     """Results from 1D defocus estimation."""
 

@@ -154,9 +154,7 @@ def warp_rfft_power_isotropic(
     h = image_sidelength
     ph, w_rfft = power_rfft.shape
     if ph != h:
-        raise ValueError(
-            f"power_rfft height {ph} != image_sidelength {h}"
-        )
+        raise ValueError(f"power_rfft height {ph} != image_sidelength {h}")
     w = (w_rfft - 1) * 2
     sf = torch.as_tensor(scale_factor, device=device, dtype=dtype)
     sf0 = float(sf.reshape(-1)[0].item()) if sf.numel() > 0 else 1.0

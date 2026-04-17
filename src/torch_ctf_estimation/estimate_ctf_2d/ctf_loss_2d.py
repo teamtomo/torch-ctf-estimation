@@ -1,4 +1,4 @@
-"""CTF simulation and correlation loss for 2D defocus estimation."""
+"""CTF simulation and correlation loss for 2D defocus and thickness estimation."""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING
 
 import torch
 from torch_ctf import calc_LPP_ctf_2D, calculate_ctf_2d
+from torch_ctf.ctf_thickness import (
+    calculate_ctf_thickness_2d,
+    calculate_ctf_thickness_lpp,
+)
 
 from torch_ctf_estimation.metrics.fit_metrics import pearson_r_flat
 
@@ -81,6 +85,113 @@ def compute_ctf2_t(
     simulated_ctf2s_t = ctf_t**2
     simulated_ctf2s_t = simulated_ctf2s_t * (env_2d**2) * bp_filter
     return simulated_ctf2s_t
+
+
+def compute_thickness_ctf_ps_t(
+    thickness_t: torch.Tensor,
+    defocus_t: torch.Tensor,
+    astig_clamped: torch.Tensor,
+    astig_angle_clamped: torch.Tensor,
+    phase_shift_deg: float,
+    image_shape: tuple[int, int],
+    pixel_spacing_angstroms: float,
+    voltage_kev: float,
+    spherical_aberration_mm: float,
+    amplitude_contrast_fraction: float,
+    env_2d: torch.Tensor,
+    bp_filter: torch.Tensor,
+    laser_params: LaserParams | None = None,
+) -> torch.Tensor:
+    """
+    Compute thickness-modulated power spectrum * env^2 * bp_filter for one frame.
+
+    Uses ``calculate_ctf_thickness_2d`` (or the LPP variant) with
+    ``return_power_spectrum=True``, so the output is already in power-spectrum form
+    (no squaring required).  ``correlation_loss_t`` can be applied directly to the
+    result.
+
+    Parameters
+    ----------
+    thickness_t : torch.Tensor
+        Sample thickness in Angstroms, shape (gh, gw) matching the patch grid.
+    defocus_t : torch.Tensor
+        Fixed defocus in micrometers, same shape as ``thickness_t``.
+    astig_clamped : torch.Tensor
+        Scalar astigmatism in micrometers.
+    astig_angle_clamped : torch.Tensor
+        Scalar astigmatism angle in degrees.
+    phase_shift_deg : float
+        Phase shift in degrees (fixed; not optimised during thickness search).
+    image_shape : tuple[int, int]
+        (H, W) of the patches.
+    pixel_spacing_angstroms : float
+        Pixel size in Angstroms.
+    voltage_kev : float
+        Acceleration voltage in keV.
+    spherical_aberration_mm : float
+        Spherical aberration in mm.
+    amplitude_contrast_fraction : float
+        Amplitude contrast fraction.
+    env_2d : torch.Tensor
+        2D B-factor envelope (rfft layout), applied as env_2d^2.
+    bp_filter : torch.Tensor
+        Bandpass filter (rfft layout).
+    laser_params : LaserParams | None
+        If set, use LPP thickness CTF; otherwise use standard thickness CTF.
+
+    Returns
+    -------
+    torch.Tensor
+        Thickness power spectrum * env^2 * bp_filter, shape (gh, gw, H, W_rfft).
+    """
+    # Expand (gh, gw) → (gh, gw, 1, 1) so that inside _ctf_from_thickness the
+    # per-patch thickness broadcasts correctly with the (H, W_rfft) frequency grid
+    # via PyTorch's right-aligned broadcast rules.
+    thickness_4d = thickness_t.unsqueeze(-1).unsqueeze(-1)
+
+    if laser_params is not None:
+        ps_t = calculate_ctf_thickness_lpp(
+            return_power_spectrum=True,
+            sample_thickness_angstrom=thickness_4d,
+            defocus=defocus_t,
+            astigmatism=astig_clamped,
+            astigmatism_angle=astig_angle_clamped,
+            voltage=voltage_kev,
+            spherical_aberration=spherical_aberration_mm,
+            amplitude_contrast=amplitude_contrast_fraction,
+            pixel_size=pixel_spacing_angstroms,
+            image_shape=image_shape,
+            rfft=True,
+            fftshift=False,
+            NA=laser_params.NA,
+            laser_wavelength_angstrom=laser_params.laser_wavelength_angstrom,
+            focal_length_angstrom=laser_params.focal_length_angstrom,
+            laser_xy_angle_deg=laser_params.laser_xy_angle_deg,
+            laser_xz_angle_deg=laser_params.laser_xz_angle_deg,
+            laser_long_offset_angstrom=laser_params.laser_long_offset_angstrom,
+            laser_trans_offset_angstrom=laser_params.laser_trans_offset_angstrom,
+            laser_polarization_angle_deg=laser_params.laser_polarization_angle_deg,
+            peak_phase_deg=laser_params.peak_phase_deg,
+            dual_laser=laser_params.dual_laser,
+        )
+    else:
+        ps_t = calculate_ctf_thickness_2d(
+            return_power_spectrum=True,
+            sample_thickness_angstrom=thickness_4d,
+            defocus=defocus_t,
+            astigmatism=astig_clamped,
+            astigmatism_angle=astig_angle_clamped,
+            voltage=voltage_kev,
+            spherical_aberration=spherical_aberration_mm,
+            amplitude_contrast=amplitude_contrast_fraction,
+            phase_shift=phase_shift_deg,
+            pixel_size=pixel_spacing_angstroms,
+            image_shape=image_shape,
+            rfft=True,
+            fftshift=False,
+        )
+    ps_t = ps_t * (env_2d**2) * bp_filter
+    return ps_t
 
 
 def correlation_loss_t(
