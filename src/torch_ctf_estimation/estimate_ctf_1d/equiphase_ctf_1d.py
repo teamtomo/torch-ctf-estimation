@@ -90,7 +90,7 @@ def _chi_symmetric_grid(
         fft_freq_grid=fft_freq_grid,
         fft_freq_grid_squared=fft_freq_grid_squared,
     )
-    if laser_params is None:
+    if laser_params is None or not laser_params.model_laser:
         chi = _phase_symmetric(
             defocus=defocus_eff,
             voltage=voltage,
@@ -222,7 +222,7 @@ def _chi_at_kxy_batch(
     cshape = spherical_aberration.reshape(1, 1, 1).expand_as(defocus_eff).reshape(1, n)
     ashape = amplitude_contrast.reshape(1, 1, 1).expand_as(defocus_eff).reshape(1, n)
 
-    if laser_params is None:
+    if laser_params is None or not laser_params.model_laser:
         phase_deg_query = phase_shift.expand_as(defocus_eff).reshape(1, n)
         chi_q = calculate_total_phase_shift(
             defocus_um=defocus_eff.reshape(1, n),
@@ -354,11 +354,12 @@ def equiphase_average_power_to_1d_rfft(
     defocus_um, astigmatism_um, astigmatism_angle_deg :
         torch_ctf 2D conventions (mean defocus, half-difference astigmatism).
     phase_shift_deg : float | torch.Tensor
-        Uniform phase plate shift; ignored for LPP when laser_params is set.
+        Uniform phase plate shift; ignored for LPP when ``model_laser`` is True.
     voltage_kev, spherical_aberration_mm, amplitude_contrast :
         Optics (same as estimate_ctf_1d).
     laser_params : LaserParams | None
-        If set, chi uses LPP phase provider like calc_LPP_ctf_2D.
+        If set and ``model_laser`` is True, chi uses LPP phase provider like
+        calc_LPP_ctf_2D.
     n_theta : int
         Number of azimuthal samples per shell.
 

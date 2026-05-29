@@ -366,13 +366,35 @@ def test_estimate_ctf_2d_default_no_laser():
 
 
 def test_estimate_ctf_2d_with_laser_params():
-    """estimate_ctf with laser_params set uses LPP CTF and returns Defocus2DResults."""
+    """estimate_ctf with model_laser=True uses LPP CTF and returns Defocus2DResults."""
     image = torch.randn(512, 512)
     _mean_ps, _result1d, result2d = estimate_ctf(
         image,
         default_optical_params(),
         default_fitting_params(defocus_range_microns=(0.5, 5.0)),
-        laser_params=LaserParams(),
+        laser_params=LaserParams(model_laser=True),
+        device=torch.device("cpu"),
+    )
+    assert result2d.defocus_model_type == "grid"
+    assert result2d.defocus_model.data.shape[1:] == (1, 2, 2)
+
+
+def test_estimate_ctf_mask_laser_axis_without_lpp_model():
+    """Laser axis masking works with standard CTF when model_laser=False."""
+    image = torch.randn(512, 512)
+    _mean_ps, _result1d, result2d = estimate_ctf(
+        image,
+        default_optical_params(),
+        default_fitting_params(
+            defocus_range_microns=(0.5, 5.0),
+            mask_laser_axis=True,
+            laser_axis_mask_width=0.1,
+        ),
+        laser_params=LaserParams(
+            model_laser=False,
+            laser_xy_angle_deg=45.0,
+            dual_laser=True,
+        ),
         device=torch.device("cpu"),
     )
     assert result2d.defocus_model_type == "grid"

@@ -140,7 +140,7 @@ def test_estimate_thickness_2d_with_laser_params():
         defocus=2.5,
         pixel_spacing_angstroms=1.0,
         n_iterations=3,
-        laser_params=LaserParams(),
+        laser_params=LaserParams(model_laser=True),
     )
     assert result.thickness_model.data.squeeze(0).shape == (1, 1, 1)
 

@@ -27,6 +27,7 @@ def _shared_astigmatism_and_env(
     initial_astigmatism_angle: float,
     optimize_astigmatism: bool,
     initial_envelope_B: float,
+    axis_mask: Optional[torch.Tensor] = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -54,6 +55,8 @@ def _shared_astigmatism_and_env(
         fftshift=False,
         device=device,
     )
+    if axis_mask is not None:
+        bp_filter = bp_filter * axis_mask.to(device=device, dtype=bp_filter.dtype)
     _angle_rad = initial_astigmatism_angle * math.pi / 180.0
     _angle_u_init = math.cos(_angle_rad)
     _angle_v_init = math.sin(_angle_rad)
@@ -184,6 +187,7 @@ def _estimate_defocus_2d_at_1x1(
     spherical_aberration_mm: float = 2.7,
     amplitude_contrast_fraction: float = 0.07,
     laser_params: Optional[LaserParams] = None,
+    axis_mask: Optional[torch.Tensor] = None,
 ) -> Defocus2DResults:
     """
     Run 2D defocus estimation at 1x1 spatial resolution (center only).
@@ -223,7 +227,8 @@ def _estimate_defocus_2d_at_1x1(
     amplitude_contrast_fraction : float, optional
         Amplitude contrast fraction (0-1) for CTF simulation. Default 0.07.
     laser_params : Optional[LaserParams], optional
-        If set, use LPP CTF model for 2D fit; if None, use standard CTF. Default None.
+        If set and ``model_laser`` is True, use LPP CTF model for 2D fit; if None
+        or ``model_laser`` is False, use standard CTF. Default None.
 
     Returns
     -------
@@ -273,4 +278,5 @@ def _estimate_defocus_2d_at_1x1(
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast_fraction=amplitude_contrast_fraction,
         laser_params=laser_params,
+        axis_mask=axis_mask,
     )

@@ -170,6 +170,7 @@ def estimate_defocus_2d_grid(
     spherical_aberration_mm: float = 2.7,
     amplitude_contrast_fraction: float = 0.10,
     laser_params: Optional[LaserParams] = None,
+    axis_mask: Optional[torch.Tensor] = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a 3D spline grid over (t, x, y).
@@ -212,6 +213,7 @@ def estimate_defocus_2d_grid(
         initial_astigmatism_angle=initial_astigmatism_angle,
         optimize_astigmatism=optimize_astigmatism,
         initial_envelope_B=initial_envelope_B,
+        axis_mask=axis_mask,
     )
     patch_power_spectra = patch_power_spectra * bp_filter
 

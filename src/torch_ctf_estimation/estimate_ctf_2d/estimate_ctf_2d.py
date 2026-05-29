@@ -44,6 +44,7 @@ def estimate_ctf_2d(
     spherical_aberration_mm: float = 2.7,
     amplitude_contrast_fraction: float = 0.07,
     laser_params: Optional[LaserParams] = None,
+    axis_mask: Optional[torch.Tensor] = None,
 ) -> Defocus2DResults:
     """
     Estimate CTF in 2D from a power spectrum.
@@ -119,8 +120,14 @@ def estimate_ctf_2d(
     amplitude_contrast_fraction : float, optional
         Amplitude contrast fraction (0-1) for CTF simulation. Default 0.07.
     laser_params : Optional[LaserParams], optional
-        If set, use LPP (laser phase plate) CTF model; if None, use standard
-        calculate_ctf_2d. Default None.
+        If set and ``model_laser`` is True, use LPP (laser phase plate) CTF
+        model; otherwise use standard calculate_ctf_2d. Laser geometry is still
+        used for axis masking when ``mask_laser_axis`` is enabled. Default None.
+    axis_mask : Optional[torch.Tensor], optional
+        2D rFFT-layout mask (shape ``(ph, pw // 2 + 1)``, values 0/1) that
+        zeros strips along the laser axis.  Folded into ``bp_filter`` so both
+        data and simulated spectra are masked identically.  Default None
+        (no masking).
 
     Returns
     -------
@@ -153,6 +160,7 @@ def estimate_ctf_2d(
             spherical_aberration_mm=spherical_aberration_mm,
             amplitude_contrast_fraction=amplitude_contrast_fraction,
             laser_params=laser_params,
+            axis_mask=axis_mask,
         )
     return estimate_defocus_2d_linear(
         patch_power_spectra=patch_power_spectra,
@@ -184,4 +192,5 @@ def estimate_ctf_2d(
         spherical_aberration_mm=spherical_aberration_mm,
         amplitude_contrast_fraction=amplitude_contrast_fraction,
         laser_params=laser_params,
+        axis_mask=axis_mask,
     )

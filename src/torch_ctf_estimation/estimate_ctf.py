@@ -30,6 +30,7 @@ from torch_ctf_estimation.utils.data_io import write_results_json
 from torch_ctf_estimation.utils.defocus_field_from_1d import (
     _defocus_field_from_1d_fits,
 )
+from torch_ctf_estimation.utils.laser_axis_mask import build_laser_axis_mask
 from torch_ctf_estimation.utils.normalize import normalize_image
 
 
@@ -53,7 +54,9 @@ def estimate_ctf(
     fitting_params : CTFFittingParams
         Defocus grid resolution, frequency range, patch size, and fitting options.
     laser_params : LaserParams | None, optional
-        If set, use LPP CTF model for 2D estimation; if None, use standard CTF.
+        If set, ``laser_xy_angle_deg`` and ``dual_laser`` can drive laser-axis
+        masking when ``mask_laser_axis`` is enabled. Use ``model_laser=True`` to
+        fit with the LPP CTF model; if None, use standard CTF with no masking.
     device : torch.device | None, optional
         Device for computation. If None, uses cuda:0 when available, else cpu.
     results_path : str | None, optional
@@ -142,6 +145,19 @@ def estimate_ctf(
     # -------------------------------------------------------------------------
     patch_ps = torch.abs(torch.fft.rfftn(patches, dim=(-2, -1))) ** 2
     mean_ps = einops.reduce(patch_ps, "... ph pw -> ph pw", reduction="mean")
+
+    # Optional: zero out FFT strips along the laser axis before fitting
+    axis_mask: Optional[torch.Tensor] = None
+    if fitting_params.mask_laser_axis and laser_params is not None:
+        axis_mask = build_laser_axis_mask(
+            image_shape=(patch_ps.shape[-2], (patch_ps.shape[-1] - 1) * 2),
+            laser_xy_angle_deg=laser_params.laser_xy_angle_deg,
+            dual_laser=laser_params.dual_laser,
+            mask_width=fitting_params.laser_axis_mask_width,
+            device=patch_ps.device,
+        )
+        patch_ps = patch_ps * axis_mask
+        mean_ps = mean_ps * axis_mask
 
     # Decide whether to build 2D defocus from per-patch 1D fits (use_1d_spatial)
     # or from a single 2D optimisation over the full grid.
@@ -253,6 +269,7 @@ def estimate_ctf(
             spherical_aberration_mm=optical_params.spherical_aberration_mm,
             amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
+            axis_mask=axis_mask,
         )
         # Per-patch 1D defocus, then fit grid or linear model to those values
         result2d = _defocus_field_from_1d_fits(
@@ -338,6 +355,7 @@ def estimate_ctf(
             spherical_aberration_mm=optical_params.spherical_aberration_mm,
             amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
+            axis_mask=axis_mask,
         )
         fix_defocus_0_val = float(result_1x1.defocus_model.data.mean().cpu().item())
         if result_1x1.astigmatism is not None:
@@ -374,6 +392,7 @@ def estimate_ctf(
         spherical_aberration_mm=optical_params.spherical_aberration_mm,
         amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
         laser_params=laser_params,
+        axis_mask=axis_mask,
     )
     # For linear defocus: add tilt axis and magnitude (degrees) to result
     if result2d.defocus_model_type == "linear":

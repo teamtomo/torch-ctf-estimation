@@ -72,7 +72,7 @@ def test_equiphase_lpp_average_runs():
     """Smoke: equiphase 1D with LPP params completes."""
     h = 24
     ps = torch.ones(h, h // 2 + 1)
-    lp = LaserParams()
+    lp = LaserParams(model_laser=True)
     out = equiphase_average_power_to_1d_rfft(
         ps,
         h,

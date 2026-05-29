@@ -40,16 +40,25 @@ class CTFFittingParams(BaseModel):
     phase_shift_model: Literal["grid", "quadratic"] = "grid"
     phase_shift_quadratic_perpendicular_axis: bool = False
     initial_phase_shift: float = 0.0
+    mask_laser_axis: bool = False
+    laser_axis_mask_width: float = 0.1
 
 
 class LaserParams(BaseModel):
     """Laser phase plate parameters for optics groups using a laser phase plate.
 
-    Default enabled is False (omit or set laser_params to null when not used).
-    Include this block only when the optics group uses a laser phase plate.
+    Pass this block when you need laser geometry (e.g. axis masking) and/or the
+    LPP CTF model. Set ``model_laser=True`` to use the LPP CTF; with
+    ``model_laser=False`` a standard CTF is used but ``laser_xy_angle_deg`` and
+    ``dual_laser`` still apply when ``mask_laser_axis`` is enabled in
+    ``CTFFittingParams``.
 
     Attributes
     ----------
+    model_laser : bool
+        If True, use the LPP CTF model for fitting. If False, use the standard
+        CTF while still allowing laser-axis masking via ``laser_xy_angle_deg`` and
+        ``dual_laser``. Default is False.
     NA : float
         Numerical aperture.
     laser_wavelength_angstrom : float
@@ -72,9 +81,10 @@ class LaserParams(BaseModel):
         Whether a dual-laser setup is used. Default is False.
     """
 
+    model_laser: bool = False
     NA: float = 0.055
     laser_wavelength_angstrom: float = 10640.0
-    focal_length_angstrom: float = 7.1e7
+    focal_length_angstrom: float = 6.8e7
     laser_xy_angle_deg: float = 0.0
     laser_xz_angle_deg: float = 0.0
     laser_long_offset_angstrom: float = 0.0

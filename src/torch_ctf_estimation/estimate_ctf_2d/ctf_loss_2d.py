@@ -41,7 +41,7 @@ def compute_ctf2_t(
 
     Returns simulated power spectrum in same shape as defocus_t (rfft layout).
     """
-    if laser_params is not None:
+    if laser_params is not None and laser_params.model_laser:
         ctf_t = calc_LPP_ctf_2D(
             defocus=defocus_t,
             astigmatism=astig_clamped,
@@ -149,7 +149,7 @@ def compute_thickness_ctf_ps_t(
     # via PyTorch's right-aligned broadcast rules.
     thickness_4d = thickness_t.unsqueeze(-1).unsqueeze(-1)
 
-    if laser_params is not None:
+    if laser_params is not None and laser_params.model_laser:
         ps_t = calculate_ctf_thickness_lpp(
             return_power_spectrum=True,
             sample_thickness_angstrom=thickness_4d,
