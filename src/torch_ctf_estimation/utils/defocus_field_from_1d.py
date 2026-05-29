@@ -24,7 +24,6 @@ def _defocus_field_from_1d_fits(
     initial_defocus: float,
     image_sidelength: int,
     frequency_fit_range_angstroms: tuple[float, float],
-    defocus_range_microns: tuple[float, float],
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast_fraction: float,
@@ -39,6 +38,9 @@ def _defocus_field_from_1d_fits(
     use_equiphase_for_1d_spatial: bool = False,
     laser_params: LaserParams | None = None,
     equiphase_n_theta: int = 64,
+    defocus_range_microns: tuple[float, float] | None = None,
+    phase_shift_range_degrees: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> Defocus2DResults:
     """
     Build defocus field from per-patch 1D fits; fit grid or linear to those values.
@@ -50,13 +52,18 @@ def _defocus_field_from_1d_fits(
     t, gh, gw, _ph, _pw = patch_power_spectra.shape
     nt, nh, nw = defocus_grid_resolution
     defocus_2d_center = float(result_1x1.defocus_model.data.mean().cpu().item())
-    initial_phase_from_1x1 = 0.0
-    if result_1x1.phase_shift_degrees is not None:
-        initial_phase_from_1x1 = result_1x1.phase_shift_degrees
-    if isinstance(initial_phase_from_1x1, torch.Tensor):
-        equiphase_phase_shift = float(initial_phase_from_1x1.cpu().item())
+    if fixed_phase_shift_deg is not None:
+        equiphase_phase_shift = fixed_phase_shift_deg
+        patch_initial_phase = fixed_phase_shift_deg
     else:
-        equiphase_phase_shift = float(initial_phase_from_1x1)
+        initial_phase_from_1x1 = 0.0
+        if result_1x1.phase_shift_degrees is not None:
+            initial_phase_from_1x1 = result_1x1.phase_shift_degrees
+        if isinstance(initial_phase_from_1x1, torch.Tensor):
+            equiphase_phase_shift = float(initial_phase_from_1x1.cpu().item())
+        else:
+            equiphase_phase_shift = float(initial_phase_from_1x1)
+        patch_initial_phase = equiphase_phase_shift
     astig_um = float(result_1x1.astigmatism or 0.0)
     astig_angle = float(result_1x1.astigmatism_angle or 0.0)
     defocus_list = []
@@ -80,7 +87,8 @@ def _defocus_field_from_1d_fits(
                     initial_defocus=defocus_2d_center,
                     background_result=background_result,
                     optimize_phase_shift=optimize_phase_shift,
-                    initial_phase_shift=initial_phase_from_1x1,
+                    initial_phase_shift=patch_initial_phase,
+                    phase_shift_range=phase_shift_range_degrees,
                     use_equiphase=use_equiphase_for_1d_spatial,
                     equiphase_defocus_um=defocus_2d_center,
                     equiphase_astigmatism_um=astig_um,

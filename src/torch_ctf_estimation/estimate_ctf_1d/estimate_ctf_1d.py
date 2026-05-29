@@ -13,17 +13,21 @@ from torch_ctf_estimation.estimate_ctf_1d.estimate_ctf_1d_utils import (
 )
 from torch_ctf_estimation.models import CTF, Defocus1DResults, LaserParams
 from torch_ctf_estimation.models.results_models import _Background1DResult
+from torch_ctf_estimation.utils.fitting_bounds import (
+    resolve_defocus_bounds,
+    resolve_phase_shift_bounds,
+)
 
 
 def estimate_ctf_1d(
     power_spectrum: torch.Tensor,
     image_sidelength: int,
     frequency_fit_range_angstroms: tuple[float, float],
-    defocus_range_microns: tuple[float, float],
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast: float,
     pixel_spacing_angstroms: float,
+    defocus_range_microns: tuple[float, float] | None = None,
     optimize_envelope: bool = True,
     b_range: tuple[float, float] = (0.0, 100.0),
     b_step: float = 1.0,
@@ -34,7 +38,7 @@ def estimate_ctf_1d(
     background_result: _Background1DResult | None = None,
     optimize_phase_shift: bool = False,
     initial_phase_shift: float = 0.0,
-    phase_shift_range: tuple[float, float] = (0.0, 180.0),
+    phase_shift_range: tuple[float, float] | None = None,
     phase_shift_step: float = 5.0,
     phase_shift_lr: float = 5.0,
     use_equiphase: bool = False,
@@ -60,8 +64,9 @@ def estimate_ctf_1d(
         Sidelength of 2D images prior to rfft calculation.
     frequency_fit_range_angstroms : tuple[float, float]
         (low, high) spatial frequency cutoffs for fitting in angstroms.
-    defocus_range_microns : tuple[float, float]
-        (low, high) defoci in microns for initial 1D fit and refinement bounds.
+    defocus_range_microns : tuple[float, float] or None
+        (low, high) defoci in microns for grid search and refinement bounds.
+        If None, grid search uses a wide internal range and refinement is unbounded.
     voltage_kev : float
         Acceleration voltage in keV.
     spherical_aberration_mm : float
@@ -93,11 +98,12 @@ def estimate_ctf_1d(
         this pre-fitted background to subtract from the rotationally averaged
         spectrum (e.g. reuse background from mean spectrum for all patches).
     optimize_phase_shift : bool
-        If True, grid search and refine phase shift (0-180°). Default False.
+        If True, grid search and refine phase shift. Default False.
     initial_phase_shift : float
         Initial phase shift in degrees when optimize_phase_shift is True. Default 0.0.
-    phase_shift_range : tuple[float, float]
-        (low, high) phase shift bounds in degrees. Default (0.0, 180.0).
+    phase_shift_range : tuple[float, float] or None
+        (low, high) phase shift bounds in degrees. If None, phase is unbounded
+        during refinement (grid search uses 0–180° internally).
     phase_shift_step : float
         Phase shift grid step in degrees for grid search. Default 5.0.
     phase_shift_lr : float
@@ -124,6 +130,8 @@ def estimate_ctf_1d(
         background model, and CTF fitting results (using refined defocus and B).
     """
     low_ang, high_ang = frequency_fit_range_angstroms
+    defocus_range_microns = resolve_defocus_bounds(defocus_range_microns)
+    phase_shift_range = resolve_phase_shift_bounds(phase_shift_range)
 
     # -------------------------------------------------------------------------
     # Step 1: Background — use existing or fit spline to rotationally averaged spectrum
@@ -179,7 +187,7 @@ def estimate_ctf_1d(
         phase_deg = (
             float(refined_phase_shift.cpu().item())
             if refined_phase_shift is not None
-            else 0.0
+            else initial_phase_shift
         )
         cc_final = compute_final_1d_l2_cross_correlation(
             bg_result.raps_in_fit_range,
@@ -240,6 +248,8 @@ def estimate_ctf_1d(
         b_step=b_step,
         optimize_phase_shift=optimize_phase_shift,
         phase_shift_step=phase_shift_step,
+        phase_shift_range=phase_shift_range,
+        fixed_phase_shift_deg=initial_phase_shift if not optimize_phase_shift else 0.0,
     )
 
     # -------------------------------------------------------------------------
@@ -286,7 +296,7 @@ def estimate_ctf_1d(
     # Step 4: Build result — phase to [0, 90], assemble Defocus1DResults
     # -------------------------------------------------------------------------
     if refined_phase_shift is None:
-        phase_deg = 0.0
+        phase_deg = initial_phase_shift
     elif isinstance(refined_phase_shift, torch.Tensor):
         phase_deg = float(refined_phase_shift.cpu().item())
     else:

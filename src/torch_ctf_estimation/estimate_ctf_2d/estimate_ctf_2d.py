@@ -45,6 +45,9 @@ def estimate_ctf_2d(
     amplitude_contrast_fraction: float = 0.07,
     laser_params: Optional[LaserParams] = None,
     axis_mask: Optional[torch.Tensor] = None,
+    defocus_bounds_microns: tuple[float, float] | None = None,
+    phase_shift_bounds_degrees: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> Defocus2DResults:
     """
     Estimate CTF in 2D from a power spectrum.
@@ -128,6 +131,15 @@ def estimate_ctf_2d(
         zeros strips along the laser axis.  Folded into ``bp_filter`` so both
         data and simulated spectra are masked identically.  Default None
         (no masking).
+    defocus_bounds_microns : tuple[float, float] or None, optional
+        (low, high) defocus bounds in microns for 2D fitting. Default None
+        uses (0, 10) µm.
+    phase_shift_bounds_degrees : tuple[float, float] or None, optional
+        (low, high) phase shift bounds in degrees for 2D fitting. Default None
+        uses (0, 180)°. Equal values fix phase at that value.
+    fixed_phase_shift_deg : float or None, optional
+        Known phase shift in degrees when ``optimize_phase_shift`` is False.
+        Default None (phase treated as zero unless set via equal bounds).
 
     Returns
     -------
@@ -161,6 +173,9 @@ def estimate_ctf_2d(
             amplitude_contrast_fraction=amplitude_contrast_fraction,
             laser_params=laser_params,
             axis_mask=axis_mask,
+            defocus_bounds_microns=defocus_bounds_microns,
+            phase_shift_bounds_degrees=phase_shift_bounds_degrees,
+            fixed_phase_shift_deg=fixed_phase_shift_deg,
         )
     return estimate_defocus_2d_linear(
         patch_power_spectra=patch_power_spectra,
@@ -193,4 +208,7 @@ def estimate_ctf_2d(
         amplitude_contrast_fraction=amplitude_contrast_fraction,
         laser_params=laser_params,
         axis_mask=axis_mask,
+        defocus_bounds_microns=defocus_bounds_microns,
+        phase_shift_bounds_degrees=phase_shift_bounds_degrees,
+        fixed_phase_shift_deg=fixed_phase_shift_deg,
     )

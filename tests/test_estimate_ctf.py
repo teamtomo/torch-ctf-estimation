@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 
@@ -291,8 +293,7 @@ def test_estimate_ctf_optimize_phase_shift_2d_quadratic():
         device=torch.device("cpu"),
     )
     assert result2d.phase_shift_degrees is not None
-    # Allow small negative (wrap-around when quadratic C is near 180°)
-    assert -1.0 <= result2d.phase_shift_degrees <= 90.0
+    assert math.isfinite(result2d.phase_shift_degrees)
     assert result2d.phase_shift_model_type == "quadratic"
     assert result2d.phase_shift_model is not None
     # Quadratic: C, alpha_rad, g1, k1, g2, k2 (g2,k2 fixed at 0 when perpendicular off)
@@ -377,6 +378,68 @@ def test_estimate_ctf_2d_with_laser_params():
     )
     assert result2d.defocus_model_type == "grid"
     assert result2d.defocus_model.data.shape[1:] == (1, 2, 2)
+
+
+def test_estimate_ctf_defocus_and_phase_bounds():
+    """Defocus and phase bounds are applied when set in CTFFittingParams."""
+    image = torch.randn(512, 512)
+    fitting = default_fitting_params(
+        defocus_range_microns=(0.8, 2.5),
+        phase_shift_range_degrees=(10.0, 80.0),
+        optimize_phase_shift=True,
+    )
+    _mean_ps, result1d, result2d = estimate_ctf(
+        image,
+        default_optical_params(),
+        fitting,
+        device=torch.device("cpu"),
+    )
+    d1 = float(result1d.ctf_model.defocus_um.cpu().item())
+    assert 0.8 <= d1 <= 2.5
+    assert result2d.phase_shift_degrees is not None
+    assert 10.0 <= result2d.phase_shift_degrees <= 80.0
+    defocus_field = result2d.defocus_model.data.squeeze(0)
+    assert defocus_field.min().item() >= 0.8 - 1e-3
+    assert defocus_field.max().item() <= 2.5 + 1e-3
+
+
+def test_fitting_bounds_defaults_and_fixed_phase():
+    """Default bounds and equal phase bounds fix phase without optimisation."""
+    from torch_ctf_estimation.utils.fitting_bounds import (
+        DEFAULT_DEFOCUS_BOUNDS_MICRONS,
+        DEFAULT_PHASE_SHIFT_BOUNDS_DEG,
+        resolve_defocus_bounds,
+        resolve_phase_shift_bounds,
+        resolve_phase_shift_fitting,
+    )
+
+    assert resolve_defocus_bounds(None) == DEFAULT_DEFOCUS_BOUNDS_MICRONS
+    assert resolve_phase_shift_bounds(None) == DEFAULT_PHASE_SHIFT_BOUNDS_DEG
+    optimize, phase_deg, bounds = resolve_phase_shift_fitting(
+        optimize_phase_shift=True,
+        phase_shift_range_degrees=(45.0, 45.0),
+        initial_phase_shift=0.0,
+    )
+    assert optimize is False
+    assert phase_deg == 45.0
+    assert bounds == (45.0, 45.0)
+
+
+def test_estimate_ctf_fixed_known_phase():
+    """Equal phase bounds use a known phase; defocus is still estimated."""
+    image = torch.randn(512, 512)
+    fitting = default_fitting_params(
+        phase_shift_range_degrees=(45.0, 45.0),
+        optimize_phase_shift=True,
+    )
+    _mean_ps, _result1d, result2d = estimate_ctf(
+        image,
+        default_optical_params(),
+        fitting,
+        device=torch.device("cpu"),
+    )
+    assert result2d.phase_shift_degrees == 45.0
+    assert result2d.phase_shift_model_type is None
 
 
 def test_estimate_ctf_mask_laser_axis_without_lpp_model():

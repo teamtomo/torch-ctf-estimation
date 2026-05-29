@@ -30,6 +30,10 @@ from torch_ctf_estimation.utils.data_io import write_results_json
 from torch_ctf_estimation.utils.defocus_field_from_1d import (
     _defocus_field_from_1d_fits,
 )
+from torch_ctf_estimation.utils.fitting_bounds import (
+    resolve_defocus_bounds,
+    resolve_phase_shift_fitting,
+)
 from torch_ctf_estimation.utils.laser_axis_mask import build_laser_axis_mask
 from torch_ctf_estimation.utils.normalize import normalize_image
 
@@ -178,11 +182,17 @@ def estimate_ctf(
     # -------------------------------------------------------------------------
     # Step 4: 1D CTF estimation — defocus (and optional B, phase) from mean spectrum
     # -------------------------------------------------------------------------
+    defocus_bounds = resolve_defocus_bounds(fitting_params.defocus_range_microns)
+    optimize_phase_1d, phase_shift_deg, phase_bounds = resolve_phase_shift_fitting(
+        optimize_phase_shift=fitting_params.optimize_phase_shift,
+        phase_shift_range_degrees=fitting_params.phase_shift_range_degrees,
+        initial_phase_shift=fitting_params.initial_phase_shift,
+    )
     result1d = estimate_ctf_1d(
         power_spectrum=mean_ps,
         image_sidelength=image_sidelength_for_1d,
         frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
-        defocus_range_microns=fitting_params.defocus_range_microns,
+        defocus_range_microns=defocus_bounds,
         voltage_kev=optical_params.voltage_kev,
         spherical_aberration_mm=optical_params.spherical_aberration_mm,
         amplitude_contrast=optical_params.amplitude_contrast_fraction,
@@ -192,8 +202,9 @@ def estimate_ctf(
         b_step=fitting_params.b_step_1d,
         refine_steps=fitting_params.refine_steps_1d,
         background_result=bg_mean,
-        optimize_phase_shift=fitting_params.optimize_phase_shift,
-        initial_phase_shift=fitting_params.initial_phase_shift,
+        optimize_phase_shift=optimize_phase_1d,
+        initial_phase_shift=phase_shift_deg,
+        phase_shift_range=phase_bounds,
     )
 
     # -------------------------------------------------------------------------
@@ -236,11 +247,8 @@ def estimate_ctf(
     else:
         initial_defocus_2d = float(initial_defocus_2d)
 
-    initial_phase_shift_2d = fitting_params.initial_phase_shift
-    if (
-        fitting_params.optimize_phase_shift
-        and result1d.ctf_model.phase_shift_degrees is not None
-    ):
+    initial_phase_shift_2d = phase_shift_deg
+    if optimize_phase_1d and result1d.ctf_model.phase_shift_degrees is not None:
         p = result1d.ctf_model.phase_shift_degrees
         initial_phase_shift_2d = (
             float(p.cpu().item()) if isinstance(p, torch.Tensor) else float(p)
@@ -261,15 +269,18 @@ def estimate_ctf(
             initial_envelope_B=initial_envelope_B_2d,
             n_iterations=fitting_params.n_iterations_2d,
             debug=fitting_params.debug,
-            optimize_phase_shift=fitting_params.optimize_phase_shift,
+            optimize_phase_shift=optimize_phase_1d,
             phase_shift_model=fitting_params.phase_shift_model,
             phase_shift_quadratic_perpendicular_axis=fitting_params.phase_shift_quadratic_perpendicular_axis,
             initial_phase_shift=initial_phase_shift_2d,
+            fixed_phase_shift_deg=phase_shift_deg if not optimize_phase_1d else None,
             voltage_kev=optical_params.voltage_kev,
             spherical_aberration_mm=optical_params.spherical_aberration_mm,
             amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
             axis_mask=axis_mask,
+            defocus_bounds_microns=defocus_bounds,
+            phase_shift_bounds_degrees=phase_bounds,
         )
         # Per-patch 1D defocus, then fit grid or linear model to those values
         result2d = _defocus_field_from_1d_fits(
@@ -281,7 +292,8 @@ def estimate_ctf(
             initial_defocus=initial_defocus_2d,
             image_sidelength=image_sidelength_for_1d,
             frequency_fit_range_angstroms=fitting_params.frequency_fit_range_angstroms,
-            defocus_range_microns=fitting_params.defocus_range_microns,
+            defocus_range_microns=defocus_bounds,
+            phase_shift_range_degrees=phase_bounds,
             voltage_kev=optical_params.voltage_kev,
             spherical_aberration_mm=optical_params.spherical_aberration_mm,
             amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
@@ -292,10 +304,11 @@ def estimate_ctf(
             refine_steps_1d=fitting_params.refine_steps_1d,
             background_result=bg_mean,
             device=patch_ps.device,
-            optimize_phase_shift=fitting_params.optimize_phase_shift,
+            optimize_phase_shift=optimize_phase_1d,
             use_equiphase_for_1d_spatial=fitting_params.use_equiphase_for_1d_spatial,
             laser_params=laser_params,
             equiphase_n_theta=fitting_params.equiphase_n_theta,
+            fixed_phase_shift_deg=phase_shift_deg if not optimize_phase_1d else None,
         )
         # For linear defocus: compute tilt axis and magnitude (degrees) for reporting
         if result2d.defocus_model_type == "linear":
@@ -309,10 +322,7 @@ def estimate_ctf(
                 }
             )
         # Copy phase-shift result from 1x1 fit into result2d when optimising phase
-        if (
-            fitting_params.optimize_phase_shift
-            and result_1x1.phase_shift_degrees is not None
-        ):
+        if optimize_phase_1d and result_1x1.phase_shift_degrees is not None:
             result2d = result2d.model_copy(
                 update={
                     "phase_shift_degrees": result_1x1.phase_shift_degrees,
@@ -320,6 +330,10 @@ def estimate_ctf(
                     "phase_shift_model": result_1x1.phase_shift_model,
                     "phase_shift_trace": result_1x1.phase_shift_trace,
                 }
+            )
+        elif not optimize_phase_1d:
+            result2d = result2d.model_copy(
+                update={"phase_shift_degrees": phase_shift_deg}
             )
         if results_path is not None:
             write_results_json(result2d, results_path)
@@ -347,25 +361,25 @@ def estimate_ctf(
             initial_envelope_B=initial_envelope_B_2d,
             n_iterations=fitting_params.n_iterations_2d,
             debug=fitting_params.debug,
-            optimize_phase_shift=fitting_params.optimize_phase_shift,
+            optimize_phase_shift=optimize_phase_1d,
             phase_shift_model=fitting_params.phase_shift_model,
             phase_shift_quadratic_perpendicular_axis=fitting_params.phase_shift_quadratic_perpendicular_axis,
             initial_phase_shift=initial_phase_shift_2d,
+            fixed_phase_shift_deg=phase_shift_deg if not optimize_phase_1d else None,
             voltage_kev=optical_params.voltage_kev,
             spherical_aberration_mm=optical_params.spherical_aberration_mm,
             amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
             laser_params=laser_params,
             axis_mask=axis_mask,
+            defocus_bounds_microns=defocus_bounds,
+            phase_shift_bounds_degrees=phase_bounds,
         )
         fix_defocus_0_val = float(result_1x1.defocus_model.data.mean().cpu().item())
         if result_1x1.astigmatism is not None:
             initial_astigmatism_2d = result_1x1.astigmatism
         if result_1x1.astigmatism_angle is not None:
             initial_astigmatism_angle_2d = result_1x1.astigmatism_angle
-        if (
-            fitting_params.optimize_phase_shift
-            and result_1x1.phase_shift_degrees is not None
-        ):
+        if optimize_phase_1d and result_1x1.phase_shift_degrees is not None:
             initial_phase_shift_for_2d = result_1x1.phase_shift_degrees
 
     # Full 2D defocus optimisation (grid or linear model)
@@ -384,15 +398,18 @@ def estimate_ctf(
         initial_astigmatism_angle=initial_astigmatism_angle_2d,
         fix_defocus_0=fix_defocus_0_val,
         n_iterations=fitting_params.n_iterations_2d,
-        optimize_phase_shift=fitting_params.optimize_phase_shift,
+        optimize_phase_shift=optimize_phase_1d,
         phase_shift_model=fitting_params.phase_shift_model,
         phase_shift_quadratic_perpendicular_axis=fitting_params.phase_shift_quadratic_perpendicular_axis,
         initial_phase_shift=initial_phase_shift_for_2d,
+        fixed_phase_shift_deg=phase_shift_deg if not optimize_phase_1d else None,
         voltage_kev=optical_params.voltage_kev,
         spherical_aberration_mm=optical_params.spherical_aberration_mm,
         amplitude_contrast_fraction=optical_params.amplitude_contrast_fraction,
         laser_params=laser_params,
         axis_mask=axis_mask,
+        defocus_bounds_microns=defocus_bounds,
+        phase_shift_bounds_degrees=phase_bounds,
     )
     # For linear defocus: add tilt axis and magnitude (degrees) to result
     if result2d.defocus_model_type == "linear":
@@ -405,6 +422,8 @@ def estimate_ctf(
                 "tilt_magnitude_deg": tilt_deg,
             }
         )
+    if not optimize_phase_1d:
+        result2d = result2d.model_copy(update={"phase_shift_degrees": phase_shift_deg})
     # Optionally write defocus, phase shift, B envelope to JSON
     if results_path is not None:
         write_results_json(result2d, results_path)

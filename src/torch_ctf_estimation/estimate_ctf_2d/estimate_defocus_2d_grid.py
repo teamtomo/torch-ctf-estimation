@@ -20,6 +20,8 @@ from torch_ctf_estimation.estimate_ctf_2d.ctf_loss_2d import (
 from torch_ctf_estimation.estimate_ctf_2d.estimate_ctf_2d_utils import (
     _astig_angle_to_m90_p90,
     _check_astig_grad_and_reset,
+    _clamp_defocus_grid_after_step,
+    _clamp_optional_bounds,
     _get_astig_clamped,
     _reset_astigmatism,
     _shared_astigmatism_and_env,
@@ -34,6 +36,10 @@ from torch_ctf_estimation.estimate_ctf_2d.phase_shift_2d import (
     phase_shift_trace_value,
 )
 from torch_ctf_estimation.models import Defocus2DResults, LaserParams
+from torch_ctf_estimation.utils.fitting_bounds import (
+    resolve_defocus_bounds,
+    resolve_phase_shift_bounds,
+)
 
 
 def _setup_grid_spectra_and_shape(
@@ -171,12 +177,17 @@ def estimate_defocus_2d_grid(
     amplitude_contrast_fraction: float = 0.10,
     laser_params: Optional[LaserParams] = None,
     axis_mask: Optional[torch.Tensor] = None,
+    defocus_bounds_microns: tuple[float, float] | None = None,
+    phase_shift_bounds_degrees: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a 3D spline grid over (t, x, y).
 
     See :func:`estimate_ctf_2d` for parameter descriptions.
     """
+    defocus_bounds_microns = resolve_defocus_bounds(defocus_bounds_microns)
+    phase_shift_bounds_degrees = resolve_phase_shift_bounds(phase_shift_bounds_degrees)
     # --- Setup: spectra, image shape, defocus grid, phase models ---
     (
         patch_power_spectra,
@@ -271,8 +282,14 @@ def estimate_defocus_2d_grid(
             # Defocus from grid eval at this frame's positions
             predicted_defocus_t = defocus_model_obj(positions_t)
             predicted_defocus_t = einops.rearrange(predicted_defocus_t, "... 1 -> ...")
+            predicted_defocus_t = _clamp_optional_bounds(
+                predicted_defocus_t, defocus_bounds_microns
+            )
             phase_shift_t, u_t, v_t = phase_shift_at_positions(
-                positions_t, phase_models
+                positions_t,
+                phase_models,
+                phase_shift_bounds_degrees,
+                fixed_phase_shift_deg=fixed_phase_shift_deg,
             )
             simulated_ctf2s_t = compute_ctf2_t(
                 defocus_t=predicted_defocus_t,
@@ -296,8 +313,6 @@ def estimate_defocus_2d_grid(
                 continue
             loss_t = correlation_loss_t(simulated_ctf2s_t, patch_ps_t, u_t, v_t)
             loss_t_list.append(loss_t)
-
-        clamp_phase_shift_after_step(phase_models)
 
         # Skip step if no valid loss (e.g. all frames had NaN CTF)
         if len(loss_t_list) == 0:
@@ -338,6 +353,8 @@ def estimate_defocus_2d_grid(
             optimiser.zero_grad()
             continue
         optimiser.step()
+        _clamp_defocus_grid_after_step(defocus_model_obj, defocus_bounds_microns)
+        clamp_phase_shift_after_step(phase_models, phase_shift_bounds_degrees)
         # Post-step: clamp astigmatism if needed
         if optimize_astigmatism:
             with torch.no_grad():
@@ -385,6 +402,8 @@ def estimate_defocus_2d_grid(
     final_phase_shift_deg, final_phase_shift_model_obj = build_phase_shift_result(
         phase_models, phase_shift_model
     )
+    if not optimize_phase_shift and fixed_phase_shift_deg is not None:
+        final_phase_shift_deg = fixed_phase_shift_deg
 
     astig_clamped_final, astig_angle_clamped_final = _get_astig_clamped(
         astigmatism, angle_u, angle_v, optimize_astigmatism
@@ -395,7 +414,12 @@ def estimate_defocus_2d_grid(
         predicted_defocus_t = einops.rearrange(
             defocus_model_obj(positions_t), "... 1 -> ..."
         )
-        phase_shift_t, _, _ = phase_shift_at_positions(positions_t, phase_models)
+        phase_shift_t, _, _ = phase_shift_at_positions(
+            positions_t,
+            phase_models,
+            phase_shift_bounds_degrees,
+            fixed_phase_shift_deg=fixed_phase_shift_deg,
+        )
         return predicted_defocus_t, phase_shift_t
 
     cc_final = mean_pearson_r_final_2d(

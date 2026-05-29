@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class OpticalParams(BaseModel):
@@ -21,7 +21,20 @@ class CTFFittingParams(BaseModel):
 
     defocus_grid_resolution: tuple[int, int, int]
     frequency_fit_range_angstroms: tuple[float, float]
-    defocus_range_microns: tuple[float, float]
+    defocus_range_microns: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "Defocus bounds in µm for 1D/2D fitting. Default (0, 10) when unset. "
+            "Equal values, e.g. (2.5, 2.5), fix defocus without optimising it."
+        ),
+    )
+    phase_shift_range_degrees: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "Phase shift bounds in degrees for 1D/2D fitting. Default (0, 180) when unset. "
+            "Equal values, e.g. (45.0, 45.0), use a known fixed phase (overrides optimize_phase_shift)."
+        ),
+    )
     patch_sidelength: int = 256
     debug: bool = False
     optimize_astigmatism: bool = True

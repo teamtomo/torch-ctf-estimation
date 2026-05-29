@@ -17,6 +17,29 @@ def _astig_angle_to_m90_p90(angle_0_180: float) -> float:
     return a if a <= 90.0 else a - 180.0
 
 
+def _clamp_optional_bounds(
+    values: torch.Tensor,
+    bounds: tuple[float, float] | None,
+) -> torch.Tensor:
+    """Clamp ``values`` to ``bounds`` when set; otherwise return unchanged."""
+    if bounds is None:
+        return values
+    lo, hi = bounds
+    return values.clamp(min=lo, max=hi)
+
+
+def _clamp_defocus_grid_after_step(
+    defocus_model_obj: torch.nn.Module,
+    defocus_bounds_microns: tuple[float, float] | None,
+) -> None:
+    """Clamp defocus spline grid control values after an optimizer step."""
+    if defocus_bounds_microns is None:
+        return
+    lo, hi = defocus_bounds_microns
+    with torch.no_grad():
+        defocus_model_obj.data.clamp_(min=lo, max=hi)
+
+
 def _shared_astigmatism_and_env(
     *,
     image_shape: tuple[int, int],
@@ -188,6 +211,9 @@ def _estimate_defocus_2d_at_1x1(
     amplitude_contrast_fraction: float = 0.07,
     laser_params: Optional[LaserParams] = None,
     axis_mask: Optional[torch.Tensor] = None,
+    defocus_bounds_microns: tuple[float, float] | None = None,
+    phase_shift_bounds_degrees: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> Defocus2DResults:
     """
     Run 2D defocus estimation at 1x1 spatial resolution (center only).
@@ -279,4 +305,7 @@ def _estimate_defocus_2d_at_1x1(
         amplitude_contrast_fraction=amplitude_contrast_fraction,
         laser_params=laser_params,
         axis_mask=axis_mask,
+        defocus_bounds_microns=defocus_bounds_microns,
+        phase_shift_bounds_degrees=phase_shift_bounds_degrees,
+        fixed_phase_shift_deg=fixed_phase_shift_deg,
     )

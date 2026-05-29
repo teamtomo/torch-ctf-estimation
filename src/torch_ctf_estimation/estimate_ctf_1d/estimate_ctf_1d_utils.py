@@ -22,6 +22,23 @@ from torch_ctf_estimation.models.results_models import (
     _GridSearch1DResult,
 )
 
+from torch_ctf_estimation.utils.fitting_bounds import (
+    resolve_defocus_bounds,
+    resolve_phase_shift_bounds,
+)
+
+
+def _grid_search_defocus_range(
+    defocus_range_microns: tuple[float, float] | None,
+) -> tuple[float, float]:
+    return resolve_defocus_bounds(defocus_range_microns)
+
+
+def _grid_search_phase_shift_range(
+    phase_shift_range: tuple[float, float] | None,
+) -> tuple[float, float]:
+    return resolve_phase_shift_bounds(phase_shift_range)
+
 
 def compute_final_1d_l2_cross_correlation(
     raps_in_fit_range: torch.Tensor,
@@ -450,7 +467,7 @@ def grid_search_defocus_and_envelope_1d(
     spatial_freqs: torch.Tensor,
     fit_mask: torch.Tensor,
     image_sidelength: int,
-    defocus_range_microns: tuple[float, float],
+    defocus_range_microns: tuple[float, float] | None,
     voltage_kev: float,
     spherical_aberration_mm: float,
     amplitude_contrast: float,
@@ -461,6 +478,8 @@ def grid_search_defocus_and_envelope_1d(
     defocus_step: float = 0.01,
     optimize_phase_shift: bool = False,
     phase_shift_step: float = 5.0,
+    phase_shift_range: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float = 0.0,
 ) -> _GridSearch1DResult:
     """
     Grid search over defocus (and optionally B-factor envelope) to maximise ZNCC.
@@ -477,8 +496,9 @@ def grid_search_defocus_and_envelope_1d(
         Boolean mask indicating which frequencies are in the fit range.
     image_sidelength : int
         Sidelength of 2D images (used for CTF n_samples).
-    defocus_range_microns : tuple[float, float]
-        (low, high) defoci in microns for the grid.
+    defocus_range_microns : tuple[float, float] or None
+        (low, high) defoci in microns for the grid. If None, a wide internal
+        search range is used; refinement is not clamped unless bounds are set.
     voltage_kev, spherical_aberration_mm, amplitude_contrast : float
         CTF parameters.
     pixel_spacing_angstroms : float
@@ -492,9 +512,13 @@ def grid_search_defocus_and_envelope_1d(
     defocus_step : float
         Defocus grid step in microns.
     optimize_phase_shift : bool
-        If True, also grid over phase shift (0-180° in steps of phase_shift_step).
+        If True, also grid over phase shift within ``phase_shift_range`` (or a
+        wide internal range when bounds are None).
     phase_shift_step : float
         Phase shift grid step in degrees when optimize_phase_shift is True. Default 5.0.
+    phase_shift_range : tuple[float, float] or None
+        (low, high) phase shift bounds in degrees for the grid search. If None,
+        a wide internal range (0–180°) is used for search only.
 
     Returns
     -------
@@ -511,17 +535,23 @@ def grid_search_defocus_and_envelope_1d(
     )
 
     # Build defocus grid (and optional phase-shift grid)
+    defocus_grid = _grid_search_defocus_range(defocus_range_microns)
     test_defoci = torch.arange(
-        start=defocus_range_microns[0],
-        end=defocus_range_microns[1] + defocus_step,
+        start=defocus_grid[0],
+        end=defocus_grid[1] + defocus_step,
         step=defocus_step,
         device=device,
         dtype=dtype,
     )
     test_phase_shift_values = None
     if optimize_phase_shift:
+        phase_grid = _grid_search_phase_shift_range(phase_shift_range)
         test_phase_shift_values = torch.arange(
-            0, 180, phase_shift_step, device=device, dtype=dtype
+            phase_grid[0],
+            phase_grid[1],
+            phase_shift_step,
+            device=device,
+            dtype=dtype,
         )
 
     # Simulate CTF² for all test defoci (and optionally each phase); slice to fit range
@@ -532,7 +562,7 @@ def grid_search_defocus_and_envelope_1d(
                 voltage=voltage_kev,
                 spherical_aberration=spherical_aberration_mm,
                 amplitude_contrast=amplitude_contrast,
-                phase_shift=0,
+                phase_shift=fixed_phase_shift_deg,
                 pixel_size=pixel_spacing_angstroms,
                 n_samples=h // 2 + 1,
                 oversampling_factor=3,
@@ -660,7 +690,7 @@ def refine_defocus_and_b_factor_1d(
     spherical_aberration_mm: float,
     amplitude_contrast: float,
     pixel_spacing_angstroms: float,
-    defocus_range_microns: tuple[float, float],
+    defocus_range_microns: tuple[float, float] | None,
     optimize_envelope: bool,
     n_iterations: int = 100,
     defocus_lr: float = 0.01,
@@ -668,7 +698,7 @@ def refine_defocus_and_b_factor_1d(
     initial_phase_shift: Optional[float] = None,
     optimize_phase_shift: bool = False,
     phase_shift_lr: float = 5.0,
-    phase_shift_range: tuple[float, float] = (0.0, 180.0),
+    phase_shift_range: tuple[float, float] | None = None,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Refine defocus (and optionally B factor) by gradient descent to maximise ZNCC.
@@ -693,8 +723,8 @@ def refine_defocus_and_b_factor_1d(
         CTF parameters.
     pixel_spacing_angstroms : float
         Isotropic pixel spacing in angstroms.
-    defocus_range_microns : tuple[float, float]
-        (low, high) defocus bounds; defocus is clamped to this range each step.
+    defocus_range_microns : tuple[float, float] or None
+        (low, high) defocus bounds; defocus is clamped each step when set.
     optimize_envelope : bool
         If True, also refine B factor (initial_B must be provided).
     n_iterations : int
@@ -706,11 +736,11 @@ def refine_defocus_and_b_factor_1d(
     initial_phase_shift : float, optional
         Initial phase shift in degrees when optimize_phase_shift is True.
     optimize_phase_shift : bool
-        If True, also refine phase shift (clamped to phase_shift_range each step).
+        If True, also refine phase shift (clamped to phase_shift_range when set).
     phase_shift_lr : float
         Learning rate for phase shift. Default 1.0.
-    phase_shift_range : tuple[float, float]
-        (low, high) phase shift bounds in degrees. Default (0.0, 180.0).
+    phase_shift_range : tuple[float, float] or None
+        (low, high) phase shift bounds in degrees. If None, phase is unbounded.
 
     Returns
     -------
@@ -720,23 +750,20 @@ def refine_defocus_and_b_factor_1d(
     """
     device = raps_in_fit_range.device
     dtype = raps_in_fit_range.dtype
+    defocus_range_microns = resolve_defocus_bounds(defocus_range_microns)
+    phase_shift_range = resolve_phase_shift_bounds(phase_shift_range)
     # Detach observation so gradients flow only through defocus/B/phase params
     raps_detached = raps_in_fit_range.detach()
     normalised_raps = raps_detached / torch.linalg.norm(raps_detached)
     spatial_freqs_fit = spatial_freqs[fit_mask].detach()
-    defocus_low, defocus_high = defocus_range_microns
-    phase_shift_low, phase_shift_high = phase_shift_range
 
-    # Parameters: defocus (always), B and phase (u,v) if requested
     defocus_param = torch.nn.Parameter(
         torch.tensor(initial_defocus, device=device, dtype=dtype)
     )
-    param_list: list[torch.nn.Parameter] = [defocus_param]
     if optimize_envelope and initial_B is not None:
         b_param = torch.nn.Parameter(
             torch.tensor(initial_B, device=device, dtype=dtype)
         )
-        param_list.append(b_param)
     else:
         b_param = None
     if optimize_phase_shift and initial_phase_shift is not None:
@@ -774,6 +801,7 @@ def refine_defocus_and_b_factor_1d(
     h = image_sidelength
     for _ in range(n_iterations):
         optimiser.zero_grad()
+        defocus_low, defocus_high = defocus_range_microns
         with torch.no_grad():
             defocus_param.clamp_(min=defocus_low, max=defocus_high)
         # Phase in degrees from unit-circle (u,v): theta = 0.5 * atan2(v, u)
@@ -782,7 +810,7 @@ def refine_defocus_and_b_factor_1d(
                 0.5 * torch.atan2(v_param, u_param) * (180.0 / math.pi), 180.0
             )
         else:
-            phase_val = 0.0
+            phase_val = initial_phase_shift if initial_phase_shift is not None else 0.0
         ctf2 = (
             calculate_ctf_1d(
                 defocus=defocus_param.unsqueeze(0),
@@ -814,6 +842,7 @@ def refine_defocus_and_b_factor_1d(
         optimiser.step()
         # Re-project (u,v) onto unit circle after step (clamp phase to range)
         if u_param is not None and v_param is not None:
+            phase_shift_low, phase_shift_high = phase_shift_range
             with torch.no_grad():
                 phase_deg = (
                     0.5 * torch.atan2(v_param, u_param) * (180.0 / math.pi)
@@ -825,6 +854,7 @@ def refine_defocus_and_b_factor_1d(
 
     # Final clamp and extract (refined_defocus, refined_B, refined_phase_shift)
     with torch.no_grad():
+        defocus_low, defocus_high = defocus_range_microns
         defocus_param.clamp_(min=defocus_low, max=defocus_high)
     refined_defocus = defocus_param.detach()
     refined_B = b_param.detach() if b_param is not None else None

@@ -20,6 +20,7 @@ from torch_ctf_estimation.estimate_ctf_2d.ctf_loss_2d import (
 from torch_ctf_estimation.estimate_ctf_2d.estimate_ctf_2d_utils import (
     _astig_angle_to_m90_p90,
     _check_astig_grad_and_reset,
+    _clamp_optional_bounds,
     _get_astig_clamped,
     _reset_astigmatism,
     _shared_astigmatism_and_env,
@@ -37,6 +38,10 @@ from torch_ctf_estimation.models import (
     Defocus2DResults,
     LaserParams,
     LinearDefocusModel,
+)
+from torch_ctf_estimation.utils.fitting_bounds import (
+    resolve_defocus_bounds,
+    resolve_phase_shift_bounds,
 )
 
 # Type for 1D spline params; use Any to avoid two TypeAlias assignments
@@ -195,6 +200,21 @@ def _linear_defocus_at_positions(
         angle_rad
     )
     return defocus_0_t + grad_mag_t * projected
+
+
+def _clamp_linear_defocus_params_after_step(
+    params: _LinearDefocusParams,
+    defocus_bounds_microns: tuple[float, float] | None,
+) -> None:
+    """Clamp linear defocus base parameters after an optimizer step."""
+    if defocus_bounds_microns is None:
+        return
+    lo, hi = defocus_bounds_microns
+    with torch.no_grad():
+        if params.defocus_0_param is not None:
+            params.defocus_0_param.clamp_(min=lo, max=hi)
+        if params.defocus_0_spline_1d is not None:
+            params.defocus_0_spline_1d.data.clamp_(min=lo, max=hi)
 
 
 def _linear_get_defocus_components_t(
@@ -476,6 +496,9 @@ def estimate_defocus_2d_linear(
     amplitude_contrast_fraction: float = 0.10,
     laser_params: Optional[LaserParams] = None,
     axis_mask: Optional[torch.Tensor] = None,
+    defocus_bounds_microns: tuple[float, float] | None = None,
+    phase_shift_bounds_degrees: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> Defocus2DResults:
     """
     Estimate defocus in 2D using a linear (tilt) model in (x, y).
@@ -484,6 +507,8 @@ def estimate_defocus_2d_linear(
     defocus_grid_resolution (nt) is used.
     See :func:`estimate_ctf_2d` for other parameter descriptions.
     """
+    defocus_bounds_microns = resolve_defocus_bounds(defocus_bounds_microns)
+    phase_shift_bounds_degrees = resolve_phase_shift_bounds(phase_shift_bounds_degrees)
     # --- Setup: spectra, shape, linear defocus params, phase models ---
     (
         patch_power_spectra,
@@ -595,9 +620,15 @@ def estimate_defocus_2d_linear(
             predicted_defocus_t = _linear_defocus_at_positions(
                 positions_t, defocus_0_t, grad_mag_t, angle_u_t, angle_v_t
             )
+            predicted_defocus_t = _clamp_optional_bounds(
+                predicted_defocus_t, defocus_bounds_microns
+            )
 
             phase_shift_t, u_t, v_t = phase_shift_at_positions(
-                positions_t, phase_models_linear
+                positions_t,
+                phase_models_linear,
+                phase_shift_bounds_degrees,
+                fixed_phase_shift_deg=fixed_phase_shift_deg,
             )
             simulated_ctf2s_t = compute_ctf2_t(
                 defocus_t=predicted_defocus_t,
@@ -622,7 +653,6 @@ def estimate_defocus_2d_linear(
             loss_t = correlation_loss_t(simulated_ctf2s_t, patch_ps_t, u_t, v_t)
             loss_t_list.append(loss_t)
 
-        clamp_phase_shift_after_step(phase_models_linear)
         if len(loss_t_list) == 0:
             if optimize_astigmatism:
                 _reset_astigmatism(
@@ -660,6 +690,8 @@ def estimate_defocus_2d_linear(
             optimiser.zero_grad()
             continue
         optimiser.step()
+        _clamp_linear_defocus_params_after_step(linear_params, defocus_bounds_microns)
+        clamp_phase_shift_after_step(phase_models_linear, phase_shift_bounds_degrees)
         if optimize_astigmatism:
             with torch.no_grad():
                 if (
@@ -713,6 +745,8 @@ def estimate_defocus_2d_linear(
     final_phase_shift_deg_linear, final_phase_shift_model_obj_linear = (
         build_phase_shift_result(phase_models_linear, phase_shift_model)
     )
+    if not optimize_phase_shift and fixed_phase_shift_deg is not None:
+        final_phase_shift_deg_linear = fixed_phase_shift_deg
 
     astig_clamped_final, astig_angle_clamped_final = _get_astig_clamped(
         astigmatism, angle_u, angle_v, optimize_astigmatism
@@ -731,7 +765,12 @@ def estimate_defocus_2d_linear(
         predicted_defocus_t = _linear_defocus_at_positions(
             positions_t, defocus_0_t, grad_mag_t, angle_u_t, angle_v_t
         )
-        phase_shift_t, _, _ = phase_shift_at_positions(positions_t, phase_models_linear)
+        phase_shift_t, _, _ = phase_shift_at_positions(
+            positions_t,
+            phase_models_linear,
+            phase_shift_bounds_degrees,
+            fixed_phase_shift_deg=fixed_phase_shift_deg,
+        )
         return predicted_defocus_t, phase_shift_t
 
     cc_final = mean_pearson_r_final_2d(

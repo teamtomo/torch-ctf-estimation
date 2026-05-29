@@ -88,6 +88,8 @@ def init_phase_shift_models(
 def phase_shift_at_positions(
     positions_t: torch.Tensor,
     phase_models: Optional[PhaseShiftModels],
+    phase_shift_bounds: tuple[float, float] | None = None,
+    fixed_phase_shift_deg: float | None = None,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """
     Evaluate phase shift (and u, v for unit-circle penalty) at normalised positions.
@@ -97,11 +99,20 @@ def phase_shift_at_positions(
     Returns
     -------
     phase_shift_t : torch.Tensor
-        Phase shift in degrees, shape (...,). Zero if phase_models is None.
+        Phase shift in degrees, shape (...,). When phase_models is None, returns
+        ``fixed_phase_shift_deg`` everywhere if set, otherwise zero.
     u_t, v_t : torch.Tensor or None
         For grid model, (u,v) on unit circle for penalty; otherwise None.
     """
     if phase_models is None:
+        if fixed_phase_shift_deg is not None:
+            phase = torch.full(
+                positions_t.shape[:-1],
+                fixed_phase_shift_deg,
+                device=positions_t.device,
+                dtype=positions_t.dtype,
+            )
+            return phase, None, None
         return (
             torch.zeros(positions_t.shape[:-1], device=positions_t.device),
             None,
@@ -113,6 +124,9 @@ def phase_shift_at_positions(
         phase_shift_t = torch.remainder(
             0.5 * torch.atan2(v_t, u_t) * (180.0 / math.pi), 180.0
         )
+        if phase_shift_bounds is not None:
+            lo, hi = phase_shift_bounds
+            phase_shift_t = torch.clamp(phase_shift_t, min=lo, max=hi)
         return phase_shift_t, u_t, v_t
     assert phase_models.quad_params is not None
     x = 2.0 * positions_t[..., 1] - 1.0
@@ -124,18 +138,44 @@ def phase_shift_at_positions(
     phase_shift_t = (
         qp["C"] + qp["g1"] * s + qp["k1"] * (s**2) + qp["g2"] * t + qp["k2"] * (t**2)
     )
-    phase_shift_t = torch.clamp(phase_shift_t, min=0.0, max=180.0)
+    if phase_shift_bounds is not None:
+        lo, hi = phase_shift_bounds
+        phase_shift_t = torch.clamp(phase_shift_t, min=lo, max=hi)
     return phase_shift_t, None, None
 
 
 def clamp_phase_shift_after_step(
     phase_models: Optional[PhaseShiftModels],
+    phase_shift_bounds: tuple[float, float] | None = None,
 ) -> None:
-    """Clamp quadratic C to [0, 180] after optimizer step. No-op for grid or None."""
-    if phase_models is None or phase_models.quad_params is None:
+    """Clamp quadratic C and grid u/v mean phase after optimizer step."""
+    if phase_models is None:
         return
-    with torch.no_grad():
-        phase_models.quad_params["C"].clamp_(min=0.0, max=180.0)
+    if phase_models.quad_params is not None:
+        if phase_shift_bounds is None:
+            return
+        lo, hi = phase_shift_bounds
+        with torch.no_grad():
+            phase_models.quad_params["C"].clamp_(min=lo, max=hi)
+        return
+    if (
+        phase_models.u_grid is not None
+        and phase_models.v_grid is not None
+        and phase_shift_bounds is not None
+    ):
+        lo, hi = phase_shift_bounds
+        with torch.no_grad():
+            u_mean = phase_models.u_grid.data.mean()
+            v_mean = phase_models.v_grid.data.mean()
+            phase_deg = (
+                0.5 * torch.atan2(v_mean, u_mean) * (180.0 / math.pi)
+            ).item()
+            phase_deg = max(lo, min(hi, phase_deg))
+            theta_rad = phase_deg * (math.pi / 180.0)
+            u_new = math.cos(2.0 * theta_rad)
+            v_new = math.sin(2.0 * theta_rad)
+            phase_models.u_grid.data.fill_(u_new)
+            phase_models.v_grid.data.fill_(v_new)
 
 
 def build_phase_shift_result(
